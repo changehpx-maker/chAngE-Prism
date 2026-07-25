@@ -49,6 +49,28 @@ class PluginSettingsWidgetTests(unittest.TestCase):
             widget.close()
         app.processEvents()
 
+    def test_project_label_preserves_display_path_casing(self):
+        class _Core:
+            projectPath = "D:/Projects/CAKPCG"
+
+        app = QApplication.instance() or QApplication([])
+        widget = PluginSettingsWidget(
+            _Core(),
+            project_key="d:\\projects\\cakpcg",
+        )
+        try:
+            self.assertEqual(
+                widget.project_label.text(),
+                "Current Prism project: %s"
+                % os.path.normpath("D:/Projects/CAKPCG"),
+            )
+            self.assertEqual(
+                widget.project_key, "d:\\projects\\cakpcg"
+            )
+        finally:
+            widget.close()
+        app.processEvents()
+
 
 if __name__ == "__main__":
     unittest.main()

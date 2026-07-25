@@ -106,10 +106,14 @@ class PluginSettingsWidget(QWidget):
         )
         layout.addLayout(form)
 
-        project_label = QLabel("OCIO project key: %s" % self.project_key)
-        project_label.setWordWrap(True)
-        project_label.setStyleSheet("color: #999;")
-        layout.addWidget(project_label)
+        project_path = getattr(self.core, "projectPath", "") or self.project_key
+        project_path = os.path.normpath(str(project_path))
+        self.project_label = QLabel(
+            "Current Prism project: %s" % project_path
+        )
+        self.project_label.setWordWrap(True)
+        self.project_label.setStyleSheet("color: #999;")
+        layout.addWidget(self.project_label)
         layout.addStretch()
 
     def _path_row(self, line_edit, callback):
