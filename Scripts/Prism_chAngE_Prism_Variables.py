@@ -39,11 +39,11 @@ from change_prism.config import get_server_root
 
 class Prism_chAngE_Prism_Variables(object):
     def __init__(self, core, plugin):
-        self.version = "v2.2.0"
+        self.version = "v2.3.0"
         self.pluginName = "chAngE_Prism"
         self.pluginType = "Custom"
         self.platforms = ["Windows", "Linux", "Darwin"]
         self.pluginDirectory = os.path.abspath(
             os.path.dirname(os.path.dirname(__file__))
         )
-        self.serverRoot = get_server_root()
+        self.serverRoot = get_server_root(core)

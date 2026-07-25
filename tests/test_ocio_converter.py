@@ -1,5 +1,4 @@
 import os
-import json
 import sys
 import tempfile
 import unittest
@@ -85,25 +84,6 @@ class InventoryTests(unittest.TestCase):
             converter.select_ocio_config("other", data, {}),
             ("ocio://default", "oiio_default"),
         )
-
-    def test_save_and_clear_project_override_preserves_config(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "config.json")
-            with open(path, "w", encoding="utf-8") as stream:
-                json.dump({"server_root": "P:/"}, stream)
-            converter.save_project_override(path, "show", "D:/show/config.ocio")
-            with open(path, "r", encoding="utf-8") as stream:
-                data = json.load(stream)
-            self.assertEqual(data["server_root"], "P:/")
-            self.assertEqual(
-                data["ocio_converter"]["project_overrides"]["show"],
-                "D:/show/config.ocio",
-            )
-            converter.save_project_override(path, "show", "")
-            with open(path, "r", encoding="utf-8") as stream:
-                data = json.load(stream)
-            self.assertNotIn("show", data["ocio_converter"]["project_overrides"])
-
 
 class SequenceTests(unittest.TestCase):
     def test_collect_sequence_and_find_gap(self):

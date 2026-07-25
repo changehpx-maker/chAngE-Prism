@@ -3,6 +3,7 @@ from __future__ import unicode_literals
 import os
 
 from change_prism.houdini_archive import runner
+from change_prism.dcc_paths import derive_hython
 from change_prism.houdini_archive.service import (
     ArchiveError,
     find_shot_root,
@@ -101,7 +102,7 @@ class HoudiniArchiveController:
         getter = getattr(self.core, "getExecutableOverride", None)
         if callable(getter):
             override = getter("Houdini")
-        explicit_hython = _derive_hython(override)
+        explicit_hython = derive_hython(override)
         source_version = runner.read_hip_version(source_hip)
         if explicit_hython:
             try:
@@ -231,16 +232,3 @@ class HoudiniArchiveController:
     def _refresh_archive(self):
         if callable(self.refresh_callback):
             self.refresh_callback()
-
-
-def _derive_hython(executable):
-    if not executable:
-        return None
-    if isinstance(executable, (list, tuple)):
-        executable = executable[0] if executable else ""
-    executable = os.path.abspath(os.path.expandvars(executable))
-    hython_name = "hython.exe" if os.name == "nt" else "hython"
-    if os.path.basename(executable).lower() == hython_name:
-        return executable
-    candidate = os.path.join(os.path.dirname(executable), hython_name)
-    return candidate if os.path.isfile(candidate) else None

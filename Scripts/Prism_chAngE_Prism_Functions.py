@@ -8,6 +8,7 @@ from change_prism.houdini_archive.controller import HoudiniArchiveController
 from change_prism.nuke_archive.controller import NukeArchiveController
 from change_prism.ocio.controller import OCIOConvertController
 from change_prism.review_copy.controller import ReviewCopyController
+from change_prism.settings.controller import SettingsController
 
 
 class Prism_chAngE_Prism_Functions(object):
@@ -26,6 +27,7 @@ class Prism_chAngE_Prism_Functions(object):
         )
         self.ocio_converter = OCIOConvertController(core)
         self.review_copy = ReviewCopyController(core)
+        self.settings = SettingsController(core, plugin)
 
         self.core.callbacks.registerCallback(
             "onProjectBrowserStartup",
@@ -45,6 +47,21 @@ class Prism_chAngE_Prism_Functions(object):
         self.core.callbacks.registerCallback(
             "mediaPlayerContextMenuRequested",
             self.onMediaPlayerContextMenuRequested,
+            plugin=self,
+        )
+        self.core.callbacks.registerCallback(
+            "userSettings_loadUI",
+            self.onUserSettingsLoadUI,
+            plugin=self,
+        )
+        self.core.callbacks.registerCallback(
+            "userSettings_loadSettings",
+            self.onUserSettingsLoadSettings,
+            plugin=self,
+        )
+        self.core.callbacks.registerCallback(
+            "userSettings_saveSettings",
+            self.onUserSettingsSaveSettings,
             plugin=self,
         )
 
@@ -97,3 +114,15 @@ class Prism_chAngE_Prism_Functions(object):
     @err_catcher(name=__name__)
     def onOCIOQuickConvert(self, media_player, formats):
         self.ocio_converter.quick_convert(media_player, formats)
+
+    @err_catcher(name=__name__)
+    def onUserSettingsLoadUI(self, origin):
+        self.settings.load_ui(origin)
+
+    @err_catcher(name=__name__)
+    def onUserSettingsLoadSettings(self, origin, settings):
+        self.settings.load_settings(origin, settings)
+
+    @err_catcher(name=__name__)
+    def onUserSettingsSaveSettings(self, origin, settings):
+        self.settings.save_settings(origin, settings)

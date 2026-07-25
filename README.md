@@ -1,6 +1,6 @@
 # chAngE_Prism
 
-`chAngE_Prism v2.2.0` 是基于 Prism 2 的制作流程扩展插件，当前主要服务于镜头批量创建、审片媒体、ACES/OCIO 转换以及 Nuke/Houdini Archive 打包。
+`chAngE_Prism v2.3.0` 是基于 Prism 2 的制作流程扩展插件，当前主要服务于镜头批量创建、审片媒体、ACES/OCIO 转换以及 Nuke/Houdini Archive 打包。
 
 Windows Prism 2.1.2/2.1.3 是当前正式验证环境。Nuke Archive 纯核心额外兼容 Nuke 13.2 的 Python 3.7；Houdini Archive 支持 Houdini 20.5+。
 
@@ -8,7 +8,7 @@ Windows Prism 2.1.2/2.1.3 是当前正式验证环境。Nuke Archive 纯核心�
 
 | 功能 | Prism 入口 | 用途 |
 |---|---|---|
-| Batch Import | `chAngE > Batch Import from Server...` | 从服务器发布目录扫描镜头，创建或更新 Prism 项目、镜头、部门、帧范围和 review MOV |
+| Batch Import | `chAngE > Batch Import from Server...` | 扫描 Animation/Cloth/Hair 发布，创建镜头和 `published_ref`，可复制到本地并后台执行 PDG FBX Convert |
 | ACES / OCIO Converter | `chAngE > ACES / OCIO Media Converter...`；Media 右键快速转换 | 将 RGB EXR 单帧/序列转换为 H.264 MP4 或 ProRes MOV |
 | Archives | Project Browser 的 `Archives` 页签 | 统一浏览、打开、检查和删除 Nuke/Houdini Archive |
 | Nuke Archive | Scenefiles 中 `.nk` 右键 | 文本解析标准 Read，复制依赖并生成相对路径 Nuke Archive |
@@ -28,9 +28,16 @@ Scripts/
       controller.py
       dialog.py
     config.py
+    dcc_paths.py
+    settings/
+      controller.py
+      dialog.py
     batch_import/
       controller.py
       scanner.py
+      file_processor.py
+      service.py
+      pdg.py
       dialog.py
     nuke_archive/
       service.py
@@ -58,27 +65,37 @@ tests/
 
 ## 配置
 
-首次使用时，将 `config.example.json` 复制为插件根目录下的
-`config.json`。`config.json` 保存本机路径并已加入 `.gitignore`：
+插件不再读取或写入根目录 `config.json`。在 Prism 中打开
+`Settings > User > chAngE_Prism` 设置本机路径，然后点击 `Save`。
+配置由 Prism 自己的用户配置系统持久化，插件更新不会覆盖这些值。
 
-```json
-{
-  "server_root": "",
-  "local_projects_root": "",
-  "review_copy": {
-    "destination_root": ""
-  }
-}
-```
-
-| 配置 | 说明 |
+| Settings 字段 | 说明 |
 |---|---|
-| `server_root` | Batch Import 的服务器根目录；空值在 Windows 回退到 `P:\` |
-| `local_projects_root` | Batch Import 创建或打开本地 Prism 项目的根目录 |
-| `review_copy.destination_root` | Daily Review Copy 根目录，实际目标为 `<root>/YYYY-MM-DD/` |
-| `ocio_converter.project_overrides` | 按 Prism 项目保存的 OCIO config 覆盖，由转换器界面维护 |
+| `Server Publish Root` | Batch Import 的服务器根目录；未设置时 Windows 回退到 `P:\` |
+| `Local Projects Root` | Batch Import 创建或打开本地 Prism 项目的根目录 |
+| `Daily Review Destination` | Daily Review Copy 根目录，实际目标为 `<root>/YYYY-MM-DD/` |
+| `Hython (from Prism)` | 只读；由 `Settings > User > Apps > Houdini` 的 executable override 自动推导 |
+| `PDG Template HIP` | Batch Import 后台 PDG 使用的模板 HIP |
+| `Houdini Package Directory` | 包含 Houdini package JSON 的目录，启动 PDG 时作为 `HOUDINI_PACKAGE_DIR` |
+| `Current Project OCIO` | 当前 Prism 项目的 OCIO config 覆盖；空值时按 `OCIO` 环境变量、`ocio://default` 回退 |
+
+Batch Import 窗口中修改服务器或本地项目路径时，也会即时写入同一份
+Prism 用户设置。旧版根目录 `config.json` 不再参与运行，可在确认新设置后手动删除。
 
 插件目录需要位于 Prism 的 `PRISM_PLUGIN_PATHS` 搜索范围内。
+
+## Batch Import
+
+- 扫描 `shot_animation`、`cloth_solution`、`hair_solution`，递归识别大小写不敏感的 FBX、ABC、MOV 和 XML。
+- Filter 支持完整 `episode/sequence/shot` 行，也支持连续三行 `episode/`、`sequence/`、`shot`。
+- `Create shot only` 仅创建或更新 Prism 镜头、部门、任务、预设场景、帧范围和服务器 metadata。
+- 默认模式保留服务器源文件路径，在 `published_ref/v####` 写入标准化 `versioninfo.json`；`Copy to local` 会先复制三个发布 step，再让记录和 PDG 指向本地版本。
+- Review MOV 进入 Prism `playblasts` 类型的 `review` media 版本；不同 step 的同名 MOV 会保留并自动加 step 前缀。
+- `Run PDG FBX Convert` 只把 FBX 写入临时 JSON，并在导入完成后后台启动一次 `hython + topcook.py`。结束弹窗会给出退出码和 stdout/stderr 日志路径。
+- Hython 始终来自 Prism 当前 Houdini executable override；`topcook.py` 从同一 Houdini 安装目录推导，不再保存 `hython_path` 或 `topcook_path`。
+- PDG 明确设置 `SHOT_BUILDER_PDG_JSON` 和 Settings 中的 `HOUDINI_PACKAGE_DIR`，不再要求系统预先配置 `PIPELINE_ROOT`。
+
+完整说明见 [Batch Import.md](Batch%20Import.md)。
 
 ## Nuke Archive
 
@@ -157,7 +174,7 @@ Houdini HOM 冒烟测试：
 & "C:\Program Files\Side Effects Software\Houdini 22.0.368\bin\hython.exe" tests\houdini_archive_smoke.py
 ```
 
-headless/HOM 测试需要对应 DCC 许可证。最近一次 Prism PySide6 环境验证共发现 85 项测试，通过 79 项、跳过 6 项环境测试；Houdini 20.5.684、21.0.631、22.0.368 的 HOM 冒烟测试此前均已通过。
+headless/HOM 测试需要对应 DCC 许可证。最近一次 Prism 2.1.3 / PySide6 环境验证共运行 104 项测试，104 项全部通过；Houdini 20.5.684、21.0.631、22.0.368 的 HOM 冒烟测试此前均已通过。
 
 ## 进一步文档
 

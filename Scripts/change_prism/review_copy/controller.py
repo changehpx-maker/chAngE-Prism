@@ -1,7 +1,7 @@
 import os
 
 from change_prism.config import (
-    get_config_path,
+    SETTINGS_LOCATION,
     get_review_copy_destination_root,
 )
 from change_prism.review_copy.service import (
@@ -35,11 +35,11 @@ class ReviewCopyController:
         )
 
     def copy_paths(self, paths):
-        destination_root = get_review_copy_destination_root()
+        destination_root = get_review_copy_destination_root(self.core)
         if not destination_root:
             self.core.popup(
                 "Review copy destination is not configured.\n"
-                "Set review_copy.destination_root in:\n%s" % get_config_path(),
+                "Set Daily Review Destination in:\n%s" % SETTINGS_LOCATION,
                 severity="warning",
             )
             return

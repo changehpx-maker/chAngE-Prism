@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-chAngE_Prism — Prism 制作流程扩展插件。当前包含服务器镜头批量导入、ACES/OCIO 审片转换、Nuke/Houdini Archive 打包和 Daily Review Copy。插件版本为 `v2.2.0`，Windows Prism 2.1.2/2.1.3 是正式验证环境；Nuke Archive 纯核心额外兼容 Nuke 13.2 / Python 3.7，Houdini Archive 支持 Houdini 20.5+。
+chAngE_Prism — Prism 制作流程扩展插件。当前包含服务器镜头批量导入、ACES/OCIO 审片转换、Nuke/Houdini Archive 打包和 Daily Review Copy。插件版本为 `v2.3.0`，Windows Prism 2.1.2/2.1.3 是正式验证环境；Nuke Archive 纯核心额外兼容 Nuke 13.2 / Python 3.7，Houdini Archive 支持 Houdini 20.5+。
 
 ## 架构
 
@@ -20,10 +20,17 @@ Scripts/
     archive_browser/
       controller.py                   # 统一 Archives 页签注册和刷新
       dialog.py                       # Nuke/Houdini Archive Browser
-    config.py                         # 插件共享配置；config.json 仍位于插件根目录
+    config.py                         # Prism 用户配置的共享读写入口
+    dcc_paths.py                      # 从 Prism executable override 推导 DCC 辅助程序
+    settings/
+      controller.py                   # Prism Settings callback 与配置合并
+      dialog.py                       # User > chAngE_Prism 配置页
     batch_import/
-      controller.py                   # Prism 项目/镜头/media 与右键菜单编排
+      controller.py                   # Prism 项目/镜头、导入模式、PDG 与右键菜单编排
       scanner.py                      # 纯逻辑：扫描服务器目录树
+      file_processor.py               # published_ref、文件标准化和 review media
+      service.py                      # 用户日志与失败报告目录
+      pdg.py                          # 单次后台 hython/topcook 与结果监控
       dialog.py                       # Batch Import QDialog
     nuke_archive/
       controller.py                   # Scenefiles 右键和后台任务编排
@@ -46,7 +53,7 @@ Scripts/
       service.py                      # 当日目录创建、文件/目录复制和失败收集
 ```
 
-**数据流**：UI 采集输入 → scanner 扫描服务器 → 创建/打开 Prism 项目 → 创建/更新镜头（含部门 + 预设场景 + media 版本化导入）。
+**Batch Import 数据流**：UI 采集输入 → 后台 scanner 扫描服务器 → 创建/打开 Prism 项目 → 创建/更新镜头 → 建立 `published_ref/v####` → 可选复制服务器 step → 标准化 FBX/ABC/XML/MOV 数据和 review media → 可选单次后台 hython/topcook。
 
 **ACES 转换数据流**：EXR 单帧/序列 → `oiiotool --ociodisplay` 烘焙 Display/View → MOV 使用临时 10-bit DPX，MP4-only 使用临时 8-bit 无压缩 TIFF → FFmpeg 编码 MP4/ProRes → 首帧解码验证 → Prism 原生转换输出路径。
 
@@ -74,9 +81,9 @@ Scripts/
 ```
 {server_root}/{project}/publish/shot/{episode}/{sequence}/{shot}/{step_category}/{step_code}/
 ```
-- step 映射：`shot_motion/shot_animation` → Animation, `shot_solution/cloth_solution` → Cloth, `shot_solution/hair_solution` → Hair（在 `_SERVER_STEPS` 和 `STEP_LABELS` 中定义，预拆分为元组避免重复 split）
+- step 映射：`shot_motion/shot_animation` → Animation, `shot_solution/cloth_solution` → Cloth, `shot_solution/hair_solution` → Hair（在 `SERVER_STEPS` 和 `STEP_LABELS` 中定义，预拆分为元组避免重复 split）
 - efx 相关内容全部跳过
-- 预拆分 `_SERVER_STEPS` 为 `[("shot_motion", "shot_animation"), ...]`，避免循环内重复 `split("/")`
+- 预拆分 `SERVER_STEPS` 为 `[("shot_motion", "shot_animation"), ...]`，避免循环内重复 `split("/")`
 
 ### 镜头部门结构
 - 每个镜头创建 3 个部门：**FX** (Effects, .hip/Houdini), **Lighting** (Lighting, .hip/Houdini), **Compositing** (Compositing, .nk/Nuke)
@@ -86,12 +93,23 @@ Scripts/
 - 批量导入时 `getShots(sequence)` 结果按 sequence 缓存在 `shots_cache` 字典中，同 sequence 的镜头只查一次
 
 ### 文件处理
+- 三种模式：`Create shot only`、引用服务器文件、`Copy to local`
+- 非 Create-only 模式创建 `published_ref/v####` 并通过 `saveVersionInfo` 写入标准化数据；复制模式把三个服务器 step 完整复制到该版本
+- scanner 递归、大小写不敏感地收集 Animation 的 FBX/MOV/XML 与 Cloth/Hair 的 ABC/MOV/XML
 - `.mov` → 通过 `mediaProducts.createIdentifier("review")` + `createVersion()` 创建版本化 media
 - 版本号：`getHighestMediaVersion(ctx, getExisting=True)` 获取当前最高版本，`_next_media_version` 通过磁盘检查决定是否递增
 - context 构造：必须用 `entity.copy()` 展开 entity 字段到顶层，不能嵌套在 `{"entity": entity}` 下。Prism 模板解析是扁平 key 查找（`"sequence" in context`），嵌套会导致 `@sequence@` 等变量无法解析
 - `_increment_version` 防御空值：`ValueError/TypeError` 时 fallback 到 `lowestVersion + 1`
-- 其余文件不拷贝不记录路径
+- 同名 review MOV 按 step label 加前缀，避免 Animation/Cloth/Hair 相互覆盖
 - shot entity metadata 存 `chAngE_server_project`、`chAngE_server_scene`、`chAngE_server_shot`（服务器侧项目/场景/镜头名），用于右键菜单直接构造服务器路径
+
+### Batch Import PDG
+- 仅在用户勾选 `Run PDG FBX Convert` 且本次成功生成 FBX shot data 时启动
+- `hython.exe` 从 Prism `getExecutableOverride("Houdini")` 的同目录推导；`topcook.py` 从该 Houdini 安装的 `houdini/python*libs/pdgjob/` 推导，两者不保存到插件配置
+- PDG 模板 HIP 和 Houdini package 目录从 `Prism Settings > User > chAngE_Prism` 读取
+- 进程环境基于 Prism `startEnv`、Houdini user/project environment，并经过 `preLaunchApp` callback；显式设置 `SHOT_BUILDER_PDG_JSON` 和 `HOUDINI_PACKAGE_DIR`
+- 不依赖系统 `PIPELINE_ROOT`；临时 JSON 每次使用独立目录，stdout/stderr 写到 Prism 用户配置目录旁的 `chAngE_Prism/logs/pdg`
+- controller 必须懒加载 `pdg.py`，避免 Qt thread/subprocess 代码增加 Prism 启动成本
 
 ### 右键菜单
 - `openPBShotContextMenu` 添加 "Open Server Folder" 子菜单，含 Animation / Cloth Solution / Hair Solution / Shot Root
@@ -118,12 +136,19 @@ Scripts/
 
 ## 配置
 
-| 配置 | 用途 |
+插件设置位于 `Prism Settings > User > chAngE_Prism`，通过 Prism 的
+`getConfig`/`setConfig` 和 `userSettings_*` callbacks 持久化。插件根目录
+`config.json` 已废弃，运行时不得读取或写入。
+
+| Settings 字段 | 用途 |
 |---|---|
-| `config.json/server_root` | 服务器根目录；为空时 Windows 默认 `P:\`，其他平台默认测试路径 |
-| `config.json/local_projects_root` | 本地 Prism 项目根目录；Batch Import 中手动编辑或浏览选择目录都会立即保存 |
-| `config.json/review_copy.destination_root` | Daily Review Copy 根目录；实际目标为 `<root>/YYYY-MM-DD/` |
-| `config.json/ocio_converter.project_overrides` | 按 Prism 项目保存的手动 OCIO config 覆盖 |
+| `Server Publish Root` | 服务器根目录；为空时 Windows 默认 `P:\`，其他平台默认测试路径 |
+| `Local Projects Root` | 本地 Prism 项目根目录；Batch Import 中手动编辑或浏览选择目录都会立即保存 |
+| `Daily Review Destination` | Daily Review Copy 根目录；实际目标为 `<root>/YYYY-MM-DD/` |
+| `Hython (from Prism)` | 只读展示；从 Prism Houdini executable override 自动推导，不保存 |
+| `PDG Template HIP` | Batch Import PDG 的模板场景 |
+| `Houdini Package Directory` | 包含 package JSON 的目录，作为后台进程 `HOUDINI_PACKAGE_DIR` |
+| `Current Project OCIO` | 按当前 Prism 项目保存的手动 OCIO config 覆盖 |
 | `OCIO` | 没有项目手动覆盖时使用的 OCIO config |
 | `PRISM_MEDIA_CONVERSION_OUTPUT_MODE` | ACES 转换输出规则：`same_folder`、`version_suffix` 或 `next_version` |
 
@@ -185,7 +210,7 @@ Scripts/
 ```bash
 python3 -c "
 from change_prism.batch_import.scanner import scan_server_shots
-results = scan_server_shots('/Users/change_mac/Desktop/test', ['Q2EP007'], project_code='zhanshen')
+results = scan_server_shots(r'Z:\publish', ['Q2EP007'], project_code='show')
 for r in results:
     print(r['episode'], r['sequence'], r['shot'], [s['label'] for s in r['steps']])
 "
@@ -213,7 +238,7 @@ Houdini HOM 验证：
 & "C:\Program Files\Side Effects Software\Houdini 22.0.368\bin\hython.exe" tests\houdini_archive_smoke.py
 ```
 
-headless/HOM 测试需要对应 DCC 许可证。最近一次 Prism PySide6 环境完整扫描共发现 85 项测试：通过 79 项、跳过 6 项环境测试；Houdini 20.5.684、21.0.631、22.0.368 的 HOM 冒烟测试此前均已通过。
+headless/HOM 测试需要对应 DCC 许可证。最近一次 Prism 2.1.3 / PySide6 环境完整扫描共运行 104 项测试，104 项全部通过；Houdini 20.5.684、21.0.631、22.0.368 的 HOM 冒烟测试此前均已通过。
 
 ## Prism API 参考
 

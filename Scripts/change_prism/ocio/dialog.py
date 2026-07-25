@@ -26,7 +26,11 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from change_prism.config import get_config_path, load_config
+from change_prism.config import (
+    get_project_config_key,
+    load_config,
+    save_ocio_project_override,
+)
 from change_prism.ocio.service import (
     build_ffmpeg_args,
     build_oiiotool_args,
@@ -36,9 +40,7 @@ from change_prism.ocio.service import (
     external_output_path,
     find_tools,
     inspect_exr,
-    project_config_key,
     read_colorconfig_inventory,
-    save_project_override,
     select_ocio_config,
     staging_output_path,
     validate_color_selection,
@@ -255,7 +257,7 @@ class OCIOConvertDialog(QDialog):
 
     def _load_initial_config(self):
         config, source = select_ocio_config(
-            project_config_key(self.core), load_config(), os.environ
+            get_project_config_key(self.core), load_config(self.core), os.environ
         )
         self.ocio_edit.setText(config)
         self.config_status.setText("Loading OCIO configuration...")
@@ -349,10 +351,10 @@ class OCIOConvertDialog(QDialog):
             self.config_status.setStyleSheet("color: #98c379;")
         if manual_change:
             try:
-                save_project_override(
-                    get_config_path(), project_config_key(self.core), config
+                save_ocio_project_override(
+                    self.core, get_project_config_key(self.core), config
                 )
-            except OSError as exc:
+            except Exception as exc:
                 self._append_log("Could not save OCIO override: %s" % exc)
         self._loaded_config_text = config
         return True
@@ -389,10 +391,10 @@ class OCIOConvertDialog(QDialog):
         self.ocio_edit.setText(path)
         if self._reload_inventory(source="project_override"):
             try:
-                save_project_override(
-                    get_config_path(), project_config_key(self.core), path
+                save_ocio_project_override(
+                    self.core, get_project_config_key(self.core), path
                 )
-            except OSError as exc:
+            except Exception as exc:
                 self._append_log("Could not save OCIO override: %s" % exc)
         else:
             self.ocio_edit.setText(previous)
@@ -400,13 +402,13 @@ class OCIOConvertDialog(QDialog):
 
     def _reset_project_config(self):
         try:
-            save_project_override(
-                get_config_path(), project_config_key(self.core), ""
+            save_ocio_project_override(
+                self.core, get_project_config_key(self.core), ""
             )
-        except OSError as exc:
+        except Exception as exc:
             self._append_log("Could not reset OCIO override: %s" % exc)
         config, source = select_ocio_config(
-            project_config_key(self.core), load_config(), os.environ
+            get_project_config_key(self.core), load_config(self.core), os.environ
         )
         self.ocio_edit.setText(config)
         self._reload_inventory(source=source)

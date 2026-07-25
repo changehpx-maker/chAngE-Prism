@@ -1,14 +1,17 @@
+import ast
+import fnmatch
 import functools
 import os
-import glob
 import re
 import xml.etree.ElementTree as ET
 
-_SERVER_STEPS = [
+
+SERVER_STEPS = [
     ("shot_motion", "shot_animation"),
     ("shot_solution", "cloth_solution"),
     ("shot_solution", "hair_solution"),
 ]
+_SERVER_STEPS = SERVER_STEPS
 
 STEP_LABELS = {
     "shot_motion/shot_animation": "Animation",
@@ -16,16 +19,21 @@ STEP_LABELS = {
     "shot_solution/hair_solution": "Hair",
 }
 
-_FILE_CATEGORIES = [
+_SOLUTION_STEP_SPEC = [
+    ("vfx", ["*.abc"], "abc_files"),
     ("review", ["*.mov"], "mov_files"),
-    ("work", ["*.mb", "*.hip", "*.ma"], "scenefile_paths"),
-    ("maya", ["*.mb"], "scenefile_paths"),
-    ("fbx", ["*.fbx"], "export_paths"),
-    ("anim", ["*.anim"], "export_paths"),
-    ("vfx", ["*.abc"], "export_paths"),
     ("xml", ["*.xml"], "xml_files"),
-    ("json", ["*.json"], "json_files"),
 ]
+
+_STEP_FILE_SPEC = {
+    "shot_animation": [
+        ("fbx", ["*.fbx"], "fbx_files"),
+        ("review", ["*.mov"], "mov_files"),
+        ("xml", ["*.xml"], "xml_files"),
+    ],
+    "cloth_solution": _SOLUTION_STEP_SPEC,
+    "hair_solution": _SOLUTION_STEP_SPEC,
+}
 
 
 @functools.lru_cache(maxsize=64)
@@ -34,8 +42,10 @@ def _list_dirs(path):
         return []
     try:
         return sorted(
-            d for d in os.listdir(path)
-            if os.path.isdir(os.path.join(path, d)) and not d.startswith(".")
+            name
+            for name in os.listdir(path)
+            if os.path.isdir(os.path.join(path, name))
+            and not name.startswith(".")
         )
     except OSError:
         return []
@@ -48,158 +58,238 @@ def clear_list_dirs_cache():
 def parse_filter_strings(text):
     if not text or not text.strip():
         return []
+    parts = [
+        part.strip()
+        for part in re.split(r"[,\n]+", text)
+        if part.strip()
+    ]
+    return _merge_filter_triplets(parts)
 
-    parts = re.split(r"[,\n]+", text)
-    return [p.strip() for p in parts if p.strip()]
 
-
-def _parse_filter_parts(filter_str):
-    parts = [p.strip() for p in filter_str.split("/") if p.strip()]
-    result = {}
-
-    if len(parts) >= 1:
-        result["episode"] = parts[0]
-    if len(parts) >= 2:
-        result["sequence"] = parts[1]
-    if len(parts) >= 3:
-        result["shot"] = parts[2]
-
+def _merge_filter_triplets(parts):
+    result = []
+    index = 0
+    while index < len(parts):
+        current = parts[index].strip()
+        if "/" in current.strip("/"):
+            result.append(current)
+            index += 1
+            continue
+        if index + 2 < len(parts):
+            sequence = parts[index + 1].strip()
+            shot = parts[index + 2].strip()
+            if current.endswith("/") and sequence.endswith("/"):
+                episode = current.rstrip("/")
+                sequence = sequence.rstrip("/")
+                shot = shot.strip("/")
+                if episode and sequence and shot:
+                    result.append(
+                        "%s/%s/%s" % (episode, sequence, shot)
+                    )
+                    index += 3
+                    continue
+        result.append(current)
+        index += 1
     return result
+
+
+def _parse_filter_parts(filter_string):
+    parts = [
+        part.strip()
+        for part in filter_string.split("/")
+        if part.strip()
+    ]
+    keys = ("episode", "sequence", "shot")
+    return dict(zip(keys, parts[:3]))
 
 
 def _disambiguate_filter_parts(filter_parts, publish_shot_dir):
     if "shot" in filter_parts:
         return filter_parts
-
-    episodes = set() if "episode" not in filter_parts else _list_dirs(publish_shot_dir)
     result = dict(filter_parts)
-
+    episode_exists = (
+        "episode" in result
+        and os.path.isdir(
+            os.path.join(publish_shot_dir, result["episode"])
+        )
+    )
     if "sequence" not in result:
-        if result["episode"] not in episodes:
-            result["shot"] = result["episode"]
-            result.pop("episode", None)
-    elif "shot" not in result:
-        if result["episode"] not in episodes:
-            result["shot"] = result["sequence"]
-            result["sequence"] = result["episode"]
-            result.pop("episode", None)
-
+        if not episode_exists:
+            result["shot"] = result.pop("episode")
+    elif not episode_exists:
+        result["shot"] = result["sequence"]
+        result["sequence"] = result.pop("episode")
     return result
 
 
-def _parse_frame_range(xml_path):
+def _convert_attr_value(value):
+    if not value:
+        return value
+    for converter in (int, float):
+        try:
+            return converter(value)
+        except (TypeError, ValueError):
+            pass
     try:
-        tree = ET.parse(xml_path)
-        root = tree.getroot()
-        seq_frame = None
-        render_start = "1001"
-        for attr in root.iter("attribute"):
-            name = attr.get("name", "")
-            value = attr.get("value", "")
-            if name == "sequence_frame":
-                seq_frame = value
-            elif name == "render_start_frame":
-                render_start = value
-        if seq_frame:
-            s = int(seq_frame)
-            start = int(render_start)
-            return [start, start + s - 1]
+        return ast.literal_eval(value)
+    except (ValueError, SyntaxError):
+        return value
+
+
+def parse_xml_attributes(xml_path):
+    try:
+        root = ET.parse(xml_path).getroot()
+        attributes = {}
+        for attribute in root.iter("attribute"):
+            attributes[attribute.get("name", "")] = _convert_attr_value(
+                attribute.get("value", "")
+            )
+
+        frame_range = None
+        frame_count = attributes.get("sequence_frame")
+        start = attributes.get("render_start_frame", 1001)
+        if (
+            isinstance(frame_count, (int, float))
+            and not isinstance(frame_count, bool)
+            and float(frame_count).is_integer()
+        ):
+            frame_range = [
+                int(start),
+                int(start) + int(frame_count) - 1,
+            ]
+        return {
+            "attributes": attributes,
+            "frame_range": frame_range,
+        }
     except Exception:
-        pass
-    return None
+        return {"attributes": {}, "frame_range": None}
 
 
-def _collect_step_files(step_dir):
-    result = {
-        "mov_files": [],
-        "scenefile_paths": [],
-        "export_paths": [],
-        "xml_files": [],
-        "json_files": [],
-    }
-
-    for subdir, exts, key in _FILE_CATEGORIES:
+def collect_step_files(step_dir, step_code):
+    result = {}
+    for subdir, patterns, key in _STEP_FILE_SPEC.get(step_code, []):
+        result.setdefault(key, [])
         target = os.path.join(step_dir, subdir)
-        if not os.path.isdir(target):
-            continue
-        for ext in exts:
-            for f in sorted(glob.glob(os.path.join(target, ext))):
-                result[key].append(f)
-
+        if os.path.isdir(target):
+            result[key].extend(_collect_matching_files(target, patterns))
     return result
+
+
+def _collect_matching_files(path, patterns):
+    matches = []
+    patterns = [pattern.lower() for pattern in patterns]
+    for root, _dirs, files in _safe_walk(path):
+        for name in files:
+            lowered = name.lower()
+            if any(fnmatch.fnmatch(lowered, pattern) for pattern in patterns):
+                matches.append(os.path.join(root, name))
+    return sorted(matches, key=lambda item: item.lower())
+
+
+def _safe_walk(path):
+    try:
+        for root, directories, files in os.walk(path):
+            directories[:] = sorted(
+                directory
+                for directory in directories
+                if not directory.startswith(".")
+            )
+            yield root, directories, files
+    except OSError:
+        return
 
 
 def scan_server_shots(server_root, filter_strs, project_code=None):
     if not os.path.isdir(server_root):
         return []
-
-    filter_parts_list = [_parse_filter_parts(f) for f in filter_strs]
-    if not filter_parts_list:
+    filter_parts = [_parse_filter_parts(item) for item in filter_strs]
+    if not filter_parts:
         return []
 
-    project_dirs = [project_code] if project_code else _list_dirs(server_root)
+    projects = [project_code] if project_code else _list_dirs(server_root)
     seen = set()
     results = []
-
-    for proj in project_dirs:
-        publish_shot_dir = os.path.join(server_root, proj, "publish", "shot")
-        if not os.path.isdir(publish_shot_dir):
+    for project in projects:
+        publish_root = os.path.join(
+            server_root, project, "publish", "shot"
+        )
+        if not os.path.isdir(publish_root):
             continue
-
-        for fp in filter_parts_list:
-            fp = _disambiguate_filter_parts(fp, publish_shot_dir)
-            ep = fp.get("episode")
-            seq = fp.get("sequence")
-            shot = fp.get("shot")
-
-            episode_dirs = [ep] if ep else _list_dirs(publish_shot_dir)
-
-            for episode in episode_dirs:
-                ep_dir = os.path.join(publish_shot_dir, episode)
-                seq_dirs = [seq] if seq else _list_dirs(ep_dir)
-
-                for sequence in seq_dirs:
-                    seq_dir = os.path.join(ep_dir, sequence)
-                    shot_dirs = [shot] if shot else _list_dirs(seq_dir)
-
-                    for shot_name in shot_dirs:
-                        key = (proj, episode, sequence, shot_name)
-                        if key in seen:
+        for raw_filter in filter_parts:
+            match = _disambiguate_filter_parts(raw_filter, publish_root)
+            episodes = (
+                [match["episode"]]
+                if match.get("episode")
+                else _list_dirs(publish_root)
+            )
+            for episode in episodes:
+                episode_dir = os.path.join(publish_root, episode)
+                sequences = (
+                    [match["sequence"]]
+                    if match.get("sequence")
+                    else _list_dirs(episode_dir)
+                )
+                for sequence in sequences:
+                    sequence_dir = os.path.join(episode_dir, sequence)
+                    shots = (
+                        [match["shot"]]
+                        if match.get("shot")
+                        else _list_dirs(sequence_dir)
+                    )
+                    for shot in shots:
+                        identity = (project, episode, sequence, shot)
+                        if identity in seen:
                             continue
-                        seen.add(key)
-
-                        shot_dir = os.path.join(seq_dir, shot_name)
+                        seen.add(identity)
+                        shot_dir = os.path.join(sequence_dir, shot)
                         steps = []
-                        for sc, ssc in _SERVER_STEPS:
-                            step_full = os.path.join(shot_dir, sc, ssc)
-                            if not os.path.isdir(step_full):
+                        for category, code in SERVER_STEPS:
+                            step_dir = os.path.join(
+                                shot_dir, category, code
+                            )
+                            if not os.path.isdir(step_dir):
                                 continue
-                            steps.append({
-                                "step_category": sc,
-                                "step_code": ssc,
-                                "label": STEP_LABELS.get("%s/%s" % (sc, ssc), ssc),
-                                "files": _collect_step_files(step_full),
-                            })
+                            steps.append(
+                                {
+                                    "step_category": category,
+                                    "step_code": code,
+                                    "label": STEP_LABELS.get(
+                                        "%s/%s" % (category, code), code
+                                    ),
+                                    "files": collect_step_files(
+                                        step_dir, code
+                                    ),
+                                }
+                            )
+                        if not steps:
+                            continue
 
-                        if steps:
-                            frame_range = None
-                            for step in steps:
-                                if step["step_code"] == "shot_animation":
-                                    for xf in step["files"].get("xml_files", []):
-                                        frame_range = _parse_frame_range(xf)
-                                        if frame_range:
-                                            break
+                        frame_range = None
+                        xml_attributes = {}
+                        for step in steps:
+                            if step["step_code"] != "shot_animation":
+                                continue
+                            for xml_path in step["files"].get(
+                                "xml_files", []
+                            ):
+                                parsed = parse_xml_attributes(xml_path)
+                                xml_attributes = parsed["attributes"]
+                                frame_range = parsed["frame_range"]
                                 if frame_range:
                                     break
+                            if frame_range:
+                                break
 
-                            results.append({
-                                "project_code": proj,
+                        results.append(
+                            {
+                                "project_code": project,
                                 "episode": episode,
                                 "sequence": sequence,
-                                "shot": shot_name,
+                                "shot": shot,
                                 "server_dir": shot_dir,
                                 "frame_range": frame_range,
+                                "xml_attributes": xml_attributes,
                                 "steps": steps,
-                            })
-
+                            }
+                        )
     return results

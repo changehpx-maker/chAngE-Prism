@@ -1,6 +1,6 @@
 # ACES / OCIO Media Converter
 
-`chAngE_Prism v2.2.0` 内置免费的 ACES/OCIO 视频转换器。它使用 Prism 自带的 OpenImageIO 和 FFmpeg，不依赖 Media Extension。
+`chAngE_Prism v2.3.0` 内置免费的 ACES/OCIO 视频转换器。它使用 Prism 自带的 OpenImageIO 和 FFmpeg，不依赖 Media Extension。
 
 ## 使用方法
 
