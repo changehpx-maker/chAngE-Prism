@@ -4,18 +4,13 @@ from change_prism.config import (
     SETTINGS_LOCATION,
     get_review_copy_destination_root,
 )
-from change_prism.review_copy.service import (
-    DestinationNotConfiguredError,
-    copy_items,
-)
-
-
 MENU_LABEL = "Copy to Daily Review Folder"
 
 
 class ReviewCopyController:
     def __init__(self, core):
         self.core = core
+        self._copy_job = None
 
     def add_file_context_menu(self, origin, menu, filepath):
         paths = self._existing_paths([filepath])
@@ -35,6 +30,13 @@ class ReviewCopyController:
         )
 
     def copy_paths(self, paths):
+        if self._copy_job is not None:
+            self.core.popup(
+                "A daily review copy is already running.",
+                severity="warning",
+            )
+            return
+
         destination_root = get_review_copy_destination_root(self.core)
         if not destination_root:
             self.core.popup(
@@ -44,32 +46,66 @@ class ReviewCopyController:
             )
             return
 
+        self._start_copy_job(paths, destination_root)
+
+    def _start_copy_job(self, paths, destination_root):
+        from change_prism.review_copy.dialog import create_copy_job
+
+        parent = getattr(self.core, "messageParent", None)
+        self._copy_job = create_copy_job(
+            paths,
+            destination_root,
+            parent,
+            self._copy_finished,
+            self._copy_failed,
+        )
+
+    def _copy_finished(self, result):
+        self._close_copy_job()
         try:
-            result = copy_items(paths, destination_root)
-        except DestinationNotConfiguredError as exc:
-            self.core.popup(str(exc), severity="warning")
-            return
+            message = "Copied %d item(s) to:\n%s" % (
+                len(result["copied"]),
+                result["destination"],
+            )
+            if result["failures"]:
+                message += "\n\nFailed %d item(s):" % len(result["failures"])
+                for failure in result["failures"]:
+                    message += "\n%s\n  %s" % (
+                        failure["source"],
+                        failure["error"],
+                    )
+
+            severity = "warning" if result["failures"] else "info"
+            self.core.popup(message, severity=severity)
         except Exception as exc:
             self.core.popup(
-                "Could not create the daily review folder:\n%s" % exc,
+                "Could not summarize the daily review copy:\n%s" % exc,
                 severity="warning",
             )
+
+    def _copy_failed(self, message):
+        self._close_copy_job()
+        self.core.popup(
+            "Could not create the daily review folder:\n%s" % message,
+            severity="warning",
+        )
+
+    def _close_copy_job(self):
+        job = self._copy_job
+        self._copy_job = None
+        if not job:
             return
 
-        message = "Copied %d item(s) to:\n%s" % (
-            len(result["copied"]),
-            result["destination"],
-        )
-        if result["failures"]:
-            message += "\n\nFailed %d item(s):" % len(result["failures"])
-            for failure in result["failures"]:
-                message += "\n%s\n  %s" % (
-                    failure["source"],
-                    failure["error"],
-                )
+        progress = job.get("progress")
+        if progress is not None:
+            try:
+                progress.close()
+            except RuntimeError:
+                pass
 
-        severity = "warning" if result["failures"] else "info"
-        self.core.popup(message, severity=severity)
+        bridge = job.get("bridge")
+        if bridge is not None:
+            bridge.deleteLater()
 
     @classmethod
     def _get_media_selection(cls, media_player):

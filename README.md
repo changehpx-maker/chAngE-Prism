@@ -1,6 +1,6 @@
 # chAngE_Prism
 
-`chAngE_Prism v2.3.0` 是基于 Prism 2 的制作流程扩展插件，当前主要服务于镜头批量创建、审片媒体、ACES/OCIO 转换以及 Nuke/Houdini Archive 打包。
+`chAngE_Prism v2.4.0` 是基于 Prism 2 的制作流程扩展插件，当前主要服务于镜头批量创建、外部图片资产管理、审片媒体、ACES/OCIO 转换以及 Nuke/Houdini Archive 打包。
 
 Windows Prism 2.1.2/2.1.3 是当前正式验证环境。Nuke Archive 纯核心额外兼容 Nuke 13.2 的 Python 3.7；Houdini Archive 支持 Houdini 20.5+。
 
@@ -11,6 +11,7 @@ Windows Prism 2.1.2/2.1.3 是当前正式验证环境。Nuke Archive 纯核心�
 | Batch Import | `chAngE > Batch Import from Server...` | 扫描 Animation/Cloth/Hair 发布，创建镜头和 `published_ref`，可复制到本地并后台执行 PDG FBX Convert |
 | ACES / OCIO Converter | `chAngE > ACES / OCIO Media Converter...`；Media 右键快速转换 | 将 RGB EXR 单帧/序列转换为 H.264 MP4 或 ProRes MOV |
 | Archives | Project Browser 的 `Archives` 页签 | 统一浏览、打开、检查和删除 Nuke/Houdini Archive |
+| Asset Library | Project Browser 的 `Asset Library` 页签 | 以外部目录源管理和浏览 HDR/EXR 及常用图片，不复制素材 |
 | Nuke Archive | Scenefiles 中 `.nk` 右键 | 文本解析标准 Read，复制依赖并生成相对路径 Nuke Archive |
 | Houdini Archive | Scenefiles 中 `.hip/.hiplc/.hipnc` 右键 | 单次 hython 收集、改写并另存场景，退出后由普通 Python 按 manifest 复制依赖 |
 | Daily Review Copy | Project Browser 文件右键；Media 预览右键 | 将选择内容复制到配置根目录下的当天日期文件夹 |
@@ -26,6 +27,10 @@ Scripts/
     archive_core.py
     archive_browser/
       controller.py
+      dialog.py
+    asset_library/
+      controller.py
+      service.py
       dialog.py
     config.py
     dcc_paths.py
@@ -69,6 +74,8 @@ tests/
 `Settings > User > chAngE_Prism` 设置本机路径，然后点击 `Save`。
 配置由 Prism 自己的用户配置系统持久化，插件更新不会覆盖这些值。
 
+Asset Library 的源列表直接在 `Asset Library` 页签内管理，同样写入 Prism 用户配置，对本机所有项目可见。
+
 | Settings 字段 | 说明 |
 |---|---|
 | `Server Publish Root` | Batch Import 的服务器根目录；未设置时 Windows 回退到 `P:\` |
@@ -83,6 +90,17 @@ Batch Import 窗口中修改服务器或本地项目路径时，也会即时写�
 Prism 用户设置。旧版根目录 `config.json` 不再参与运行，可在确认新设置后手动删除。
 
 插件目录需要位于 Prism 的 `PRISM_PLUGIN_PATHS` 搜索范围内。
+
+## Asset Library
+
+- 使用 `Add Source` 登记任意外部目录；根节点和子目录保留磁盘上的真实名字。
+- 支持 EXR、HDR、JPG/JPEG、PNG、TIF/TIFF、TGA 和 BMP。
+- 左侧目录树控制浏览位置，右侧只显示当前目录的直属图片。
+- 非空搜索会搜索所有启用源；同一源内具有相同文件名、大小和修改时间的多分类副本合并显示，并可在详情中选择实际路径。
+- 选择目录后点击 `Generate Thumbnails`，只为该目录直属素材生成缺失或过期的缩略图；浏览和刷新只读取已有缓存。生成时总并发最多 4 个，其中 HDR/EXR 最多 2 个。缩略图写入素材旁的 `_thumbs/<原文件名含扩展>.jpg`，移除源不会删除素材或缩略图。
+- 首版只有打开、Explorer 定位和复制路径，不执行 DCC 导入。
+
+完整说明见 [Asset Library.md](Asset%20Library.md)。
 
 ## Batch Import
 
@@ -174,11 +192,12 @@ Houdini HOM 冒烟测试：
 & "C:\Program Files\Side Effects Software\Houdini 22.0.368\bin\hython.exe" tests\houdini_archive_smoke.py
 ```
 
-headless/HOM 测试需要对应 DCC 许可证。最近一次 Prism 2.1.3 / PySide6 环境验证共运行 104 项测试，104 项全部通过；Houdini 20.5.684、21.0.631、22.0.368 的 HOM 冒烟测试此前均已通过。
+headless/HOM 测试需要对应 DCC 许可证。最近一次 Prism 2.1.3 / PySide6 环境验证共运行 128 项测试：通过 127 项，跳过 1 项需要 Windows 目录符号链接权限的测试；Houdini 20.5.684、21.0.631、22.0.368 的 HOM 冒烟测试此前均已通过。
 
 ## 进一步文档
 
 - [开发需求.md](开发需求.md)：需求范围和实现状态
+- [Asset Library.md](Asset%20Library.md)：外部图片源、搜索聚合和缩略图规则
 - [CLAUDE.md](CLAUDE.md)：代码架构、约定和 Prism API 注意事项
 - [prism环境变量.md](prism环境变量.md)：Prism 环境变量速查
 - [prism_docs/](prism_docs/)：仓库内 Prism 官方文档镜像

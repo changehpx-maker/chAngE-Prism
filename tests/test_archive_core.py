@@ -13,6 +13,34 @@ from change_prism import archive_core
 
 
 class ArchiveCoreTests(unittest.TestCase):
+    def test_fast_health_check_skips_per_file_manifest_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version = Path(tmp) / "v0001"
+            payload = version / "dependencies" / "cache"
+            payload.mkdir(parents=True)
+            manifest = {
+                "application": "houdini",
+                "copy_jobs": [
+                    {
+                        "destination": "dependencies/cache",
+                        "files": ["missing.bgeo.sc"],
+                    }
+                ],
+            }
+            self.assertTrue(
+                archive_core._manifest_payload_missing(
+                    str(version),
+                    manifest,
+                )
+            )
+            self.assertFalse(
+                archive_core._manifest_payload_missing(
+                    str(version),
+                    manifest,
+                    deep=False,
+                )
+            )
+
     def test_infers_department_and_task_from_scene_path(self):
         self.assertEqual(
             archive_core.infer_scene_context(

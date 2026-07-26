@@ -3,7 +3,7 @@ from __future__ import unicode_literals
 import os
 import re
 
-from qtpy.QtCore import QSize, Qt, QUrl
+from qtpy.QtCore import QThread, QSize, Qt, QUrl, Signal
 from qtpy.QtGui import QDesktopServices, QIcon
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -31,6 +31,70 @@ from change_prism.archive_core import (
     format_bytes,
     scan_archive_versions,
 )
+
+
+_ACTIVE_ARCHIVE_THREADS = set()
+
+
+def _track_thread(thread):
+    _ACTIVE_ARCHIVE_THREADS.add(thread)
+
+    def release():
+        _ACTIVE_ARCHIVE_THREADS.discard(thread)
+        thread.deleteLater()
+
+    thread.finished.connect(release)
+    thread.start()
+
+
+class ArchiveScanThread(QThread):
+    completed = Signal(object, int, str)
+    failed = Signal(str, int, str)
+
+    def __init__(self, archive_root, generation):
+        super(ArchiveScanThread, self).__init__()
+        self.archive_root = archive_root
+        self.generation = generation
+
+    def run(self):
+        try:
+            versions = scan_archive_versions(
+                self.archive_root,
+                deep_health=False,
+            )
+        except Exception as exc:
+            self.failed.emit(
+                str(exc),
+                self.generation,
+                self.archive_root,
+            )
+        else:
+            self.completed.emit(
+                versions,
+                self.generation,
+                self.archive_root,
+            )
+
+
+class ArchiveDeleteThread(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, version_path, archive_root):
+        super(ArchiveDeleteThread, self).__init__()
+        self.version_path = version_path
+        self.archive_root = archive_root
+
+    def run(self):
+        try:
+            result = delete_archive_version(
+                self.version_path,
+                self.archive_root,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.completed.emit(result)
 
 
 class LazyArchiveBrowserWidget(QWidget):
@@ -93,6 +157,11 @@ class ArchiveBrowserWidget(QWidget):
         self.refreshStatus = "invalid"
         self._versions = []
         self._version_groups = []
+        self._scan_generation = 0
+        self._scan_thread = None
+        self._pending_scan = None
+        self._delete_thread = None
+        self._delete_version = None
         self.setProperty("tabType", "Archive")
         self.setProperty("archiveBrowserKind", "multi_dcc")
 
@@ -298,8 +367,11 @@ class ArchiveBrowserWidget(QWidget):
         self.refreshStatus = "valid"
 
     def refresh_versions(self):
+        self._scan_generation += 1
+        generation = self._scan_generation
         entity = self.w_entities.getCurrentData()
         if not entity or entity.get("type") != "shot":
+            self._pending_scan = None
             self._versions = []
             self._version_groups = []
             self.table.setRowCount(0)
@@ -313,7 +385,43 @@ class ArchiveBrowserWidget(QWidget):
         except TypeError:
             shot_path = self.core.getEntityPath(entity)
         archive_root = os.path.join(shot_path, "Archives")
-        self._versions = scan_archive_versions(archive_root)
+        self._pending_scan = (archive_root, generation)
+        self.status_label.setText("Scanning Archives...")
+        self.status_label.setToolTip(archive_root)
+        self._start_pending_scan()
+
+    def _start_pending_scan(self):
+        if self._scan_thread is not None or self._pending_scan is None:
+            return
+        archive_root, generation = self._pending_scan
+        self._pending_scan = None
+        thread = ArchiveScanThread(archive_root, generation)
+        thread.completed.connect(self._scan_completed)
+        thread.failed.connect(self._scan_failed)
+        self._scan_thread = thread
+        _track_thread(thread)
+
+    def _scan_completed(self, versions, generation, archive_root):
+        self._scan_thread = None
+        if generation == self._scan_generation:
+            self._apply_versions(versions, archive_root)
+        self._start_pending_scan()
+
+    def _scan_failed(self, message, generation, archive_root):
+        self._scan_thread = None
+        if generation == self._scan_generation:
+            self._versions = []
+            self._version_groups = []
+            self.table.setRowCount(0)
+            self.status_label.setText(
+                "Could not scan Archives: %s" % message
+            )
+            self.status_label.setToolTip(archive_root)
+            self._selection_changed()
+        self._start_pending_scan()
+
+    def _apply_versions(self, versions, archive_root):
+        self._versions = versions
         self._version_groups = self._group_archive_versions(
             self._versions
         )
@@ -615,11 +723,26 @@ class ArchiveBrowserWidget(QWidget):
             confirmed = answer == QMessageBox.Yes
         if not confirmed:
             return
-        try:
-            result = delete_archive_version(version_path, archive_root)
-        except Exception as exc:
-            self._show_popup(str(exc), "error")
+        if self._delete_thread is not None:
+            self._show_popup(
+                "An Archive deletion is already running.",
+                "warning",
+            )
             return
+        self._delete_version = dict(version)
+        thread = ArchiveDeleteThread(version_path, archive_root)
+        thread.completed.connect(self._delete_completed)
+        thread.failed.connect(self._delete_failed)
+        self._delete_thread = thread
+        self.table.setEnabled(False)
+        self.status_label.setText("Deleting Archive...")
+        _track_thread(thread)
+
+    def _delete_completed(self, result):
+        version = self._delete_version or {}
+        self._delete_thread = None
+        self._delete_version = None
+        self.table.setEnabled(True)
         self._show_popup(
             "Deleted Archive %s:\n%s"
             % (
@@ -628,6 +751,13 @@ class ArchiveBrowserWidget(QWidget):
             ),
             "info",
         )
+        self.refresh_versions()
+
+    def _delete_failed(self, message):
+        self._delete_thread = None
+        self._delete_version = None
+        self.table.setEnabled(True)
+        self._show_popup(message, "error")
         self.refresh_versions()
 
     def _show_popup(self, message, severity):

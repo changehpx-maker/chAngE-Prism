@@ -133,6 +133,9 @@ def build_package_plan(source_nk, archive_root):
             file_count, total_bytes = _measure_source_item(source_item, kind)
             job["file_count"] = file_count
             job["total_bytes"] = total_bytes
+            job["source_mtime_ns"] = int(
+                os.stat(source_item).st_mtime_ns
+            )
             jobs_by_source[source_key] = job
             copy_jobs.append(job)
 
@@ -200,9 +203,9 @@ def execute_package(plan, progress_callback=None, is_cancelled=None):
     if not isinstance(plan, dict):
         raise PackageExecutionError("Package plan must be a dictionary.")
 
-    source_nk = plan.get("source_nk", "")
-    archive_root = plan.get("archive_root", "")
-    fresh_plan = build_package_plan(source_nk, archive_root)
+    fresh_plan = _validated_execution_plan(plan)
+    source_nk = fresh_plan["source_nk"]
+    archive_root = fresh_plan["archive_root"]
 
     version_path = ""
     try:
@@ -351,6 +354,68 @@ def execute_package(plan, progress_callback=None, is_cancelled=None):
         if cleanup_error:
             message += "\n\nCould not clean the incomplete Archive:\n%s" % cleanup_error
         raise PackageExecutionError(message)
+
+
+def _validated_execution_plan(plan):
+    source_nk = os.path.abspath(os.fspath(plan.get("source_nk", "")))
+    archive_root = os.path.abspath(
+        os.fspath(plan.get("archive_root", ""))
+    )
+    if not os.path.isfile(source_nk):
+        raise PackageExecutionError(
+            "Nuke script no longer exists:\n%s" % source_nk
+        )
+
+    recorded_stat = plan.get("source_nk_stat") or {}
+    current_stat = _file_fingerprint(source_nk)
+    if (
+        int(current_stat.get("size", -1))
+        != int(recorded_stat.get("size", -2))
+        or int(
+            current_stat.get(
+                "mtime_ns",
+                current_stat.get("modified_ns", -1),
+            )
+        )
+        != int(
+            recorded_stat.get(
+                "mtime_ns",
+                recorded_stat.get("modified_ns", -2),
+            )
+        )
+    ):
+        raise PackageExecutionError(
+            "The Nuke script changed after preflight. "
+            "Run Package Nuke Archive again."
+        )
+
+    for job in plan.get("copy_jobs", []):
+        source = job.get("source", "")
+        kind = job.get("kind")
+        exists = (
+            os.path.isdir(source)
+            if kind == "directory"
+            else os.path.isfile(source)
+        )
+        if not exists:
+            raise PackageExecutionError(
+                "A package source changed after preflight:\n%s" % source
+            )
+        recorded_mtime = job.get("source_mtime_ns")
+        if recorded_mtime is not None:
+            current_mtime = int(os.stat(source).st_mtime_ns)
+            if current_mtime != int(recorded_mtime):
+                raise PackageExecutionError(
+                    "A package source changed after preflight:\n%s" % source
+                )
+
+    validated = dict(plan)
+    validated["source_nk"] = source_nk
+    validated["archive_root"] = archive_root
+    validated["available_bytes"] = _get_available_bytes(
+        validated.get("version_root") or archive_root
+    )
+    return validated
 
 
 def _read_nuke_document(path):

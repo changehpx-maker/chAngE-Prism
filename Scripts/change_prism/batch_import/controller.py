@@ -1,6 +1,6 @@
 import os
 
-from qtpy.QtCore import Qt, QUrl
+from qtpy.QtCore import QTimer, Qt, QUrl
 from qtpy.QtGui import QDesktopServices
 from qtpy.QtWidgets import QAction, QMenu
 
@@ -40,6 +40,8 @@ class BatchImportController(object):
         self.file_processor = FileProcessor(core)
         self._preset_scenes_cache = None
         self._pdg_processor = None
+        self._import_state = None
+        self._file_job = None
 
     def open_dialog(self):
         from change_prism.batch_import.dialog import BatchImportDialog
@@ -50,11 +52,279 @@ class BatchImportController(object):
         dialog = BatchImportDialog(
             self.core,
             self.plugin.serverRoot,
-            create_callback=self._create_project_and_shots,
+            create_callback=self._start_project_and_shots,
             finish_callback=self._on_batch_import_finished,
             parent=parent,
         )
         dialog.exec_()
+
+    def _start_project_and_shots(self, data):
+        finished_callback = data.get("_finished_callback")
+        reporter = data.get("_reporter") or _NullReporter()
+        if not callable(finished_callback):
+            raise RuntimeError(
+                "Batch import requires a completion callback."
+            )
+        if self._import_state is not None:
+            raise RuntimeError("A Batch Import is already running.")
+
+        project_name = data["project_name"]
+        project_path = data["project_path"]
+        selected = list(data["selected"])
+        project_loaded = False
+        try:
+            config_path = os.path.join(
+                project_path,
+                "00_Pipeline",
+                "project_config.json",
+            )
+            if os.path.exists(config_path):
+                reporter.set_status(
+                    "Opening existing project '%s'..." % project_name
+                )
+                self.core.projects.changeProject(config_path)
+                project_loaded = True
+            else:
+                reporter.set_status(
+                    "Creating Prism project '%s'..." % project_name
+                )
+                config_path = self.core.projects.createProject(
+                    name=project_name,
+                    path=project_path,
+                    preset="Default",
+                    parent=data.get("parent"),
+                )
+                if not config_path:
+                    finished_callback(
+                        self._build_import_result(
+                            0,
+                            len(selected),
+                            [],
+                            {
+                                "project": project_name,
+                                "total": len(selected),
+                            },
+                            [],
+                        )
+                    )
+                    return None
+                reporter.set_status(
+                    "Loading project '%s'..." % project_name
+                )
+                self.core.projects.changeProject(config_path)
+                project_loaded = True
+                self._set_project_departments()
+        except Exception as exc:
+            finished_callback(
+                self._build_import_result(
+                    0,
+                    len(selected),
+                    [],
+                    {
+                        "project": project_name,
+                        "total": len(selected),
+                    },
+                    [],
+                    project_loaded=project_loaded,
+                    error=str(exc),
+                )
+            )
+            return None
+
+        self._import_state = {
+            "data": data,
+            "reporter": reporter,
+            "finished_callback": finished_callback,
+            "project_name": project_name,
+            "selected": selected,
+            "project_loaded": project_loaded,
+            "create_only": bool(data.get("create_only")),
+            "copy_to_local": bool(data.get("copy_to_local")),
+            "pdg_enabled": bool(data.get("pdg_enabled")),
+            "index": 0,
+            "success": 0,
+            "failures": [],
+            "shot_data_list": [],
+            "shots_cache": {},
+            "current": None,
+        }
+        QTimer.singleShot(0, self._advance_async_import)
+        return None
+
+    def _advance_async_import(self):
+        state = self._import_state
+        if state is None:
+            return
+        if state["index"] >= len(state["selected"]):
+            self._finish_async_import()
+            return
+
+        item = state["selected"][state["index"]]
+        state["index"] += 1
+        state["reporter"].update_progress(state["index"])
+        state["current"] = {"item": item}
+        try:
+            entity = self._create_single_shot(
+                item,
+                state["project_name"],
+                state["shots_cache"],
+            )
+            if state["create_only"]:
+                self._complete_async_shot()
+                return
+            prepared = self.file_processor.prepare(
+                item,
+                entity,
+                state["project_name"],
+                state["copy_to_local"],
+            )
+            state["current"].update(
+                {"entity": entity, "prepared": prepared}
+            )
+            self._start_file_work("product", prepared)
+        except Exception as exc:
+            self._fail_async_shot(str(exc))
+
+    def _start_file_work(self, mode, payload):
+        from qtpy.QtCore import QThread
+        from change_prism.batch_import.dialog import (
+            BatchFileUiBridge,
+            BatchFileWorker,
+        )
+
+        state = self._import_state
+        parent = state["data"].get("parent") if state else None
+        thread = QThread(parent)
+        worker = BatchFileWorker(self.file_processor, mode, payload)
+        worker.moveToThread(thread)
+        job = {
+            "thread": thread,
+            "worker": worker,
+            "mode": mode,
+        }
+        bridge = BatchFileUiBridge(
+            parent,
+            on_finished=lambda result: self._file_work_finished(
+                job,
+                result,
+            ),
+            on_failed=lambda message: self._file_work_failed(
+                job,
+                message,
+            ),
+            on_thread_finished=lambda: self._cleanup_file_job(job),
+        )
+        job["bridge"] = bridge
+        self._file_job = job
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(bridge.work_finished)
+        worker.failed.connect(bridge.work_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(bridge.thread_finished)
+        thread.start()
+
+    def _file_work_finished(self, job, result):
+        state = self._import_state
+        if state is None:
+            return
+        try:
+            if job["mode"] == "product":
+                current = state["current"]
+                current["shot_data"] = result
+                self.file_processor.finalize_product(
+                    current["prepared"],
+                    result,
+                )
+                copies = self.file_processor.prepare_review_copies(
+                    current["entity"],
+                    result,
+                )
+                if copies:
+                    self._start_file_work("review", copies)
+                    return
+            self._complete_async_shot()
+        except Exception as exc:
+            self._fail_async_shot(str(exc))
+
+    def _file_work_failed(self, job, message):
+        del job
+        self._fail_async_shot(message)
+
+    def _cleanup_file_job(self, job):
+        if self._file_job is job:
+            self._file_job = None
+        job["thread"].deleteLater()
+        job["bridge"].deleteLater()
+
+    def _complete_async_shot(self):
+        state = self._import_state
+        if state is None:
+            return
+        current = state["current"] or {}
+        shot_data = current.get("shot_data")
+        if shot_data is not None:
+            state["shot_data_list"].append(shot_data)
+        state["success"] += 1
+        state["current"] = None
+        QTimer.singleShot(0, self._advance_async_import)
+
+    def _fail_async_shot(self, message):
+        state = self._import_state
+        if state is None:
+            return
+        item = (state.get("current") or {}).get("item", {})
+        state["failures"].append(
+            {
+                "episode": item.get("episode", ""),
+                "sequence": item.get("sequence", ""),
+                "shot": item.get("shot", ""),
+                "server_dir": item.get("server_dir", ""),
+                "error": str(message),
+            }
+        )
+        state["current"] = None
+        QTimer.singleShot(0, self._advance_async_import)
+
+    def _finish_async_import(self):
+        state = self._import_state
+        if state is None:
+            return
+        self._import_state = None
+        failures = state["failures"]
+        try:
+            failure_report = write_failure_report(
+                self.core,
+                state["project_name"],
+                failures,
+            )
+        except OSError:
+            failure_report = ""
+        summary = {
+            "project": state["project_name"],
+            "total": len(state["selected"]),
+            "create_only": state["create_only"],
+            "copy_to_local": state["copy_to_local"],
+            "pdg_enabled": (
+                state["pdg_enabled"]
+                and not state["create_only"]
+                and bool(state["shot_data_list"])
+            ),
+            "failure_report": failure_report,
+        }
+        state["finished_callback"](
+            self._build_import_result(
+                state["success"],
+                len(failures),
+                failures,
+                summary,
+                state["shot_data_list"],
+                project_loaded=state["project_loaded"],
+            )
+        )
 
     def add_shot_context_menu(self, origin, menu, _index):
         tree = getattr(origin, "tw_tree", None)

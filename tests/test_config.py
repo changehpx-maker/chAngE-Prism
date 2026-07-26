@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -81,6 +82,47 @@ class ConfigTests(unittest.TestCase):
             "D:/pipeline/hou_pkgs",
         )
         self.assertNotIn("hython_path", config.load_config(core)["pdg"])
+
+    def test_asset_library_sources_are_global_normalized_and_deduplicated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = os.path.join(tmp, "categories")
+            os.makedirs(source)
+            core = _Core(
+                {
+                    config.CONFIG_SECTION: {
+                        "asset_library": {
+                            "sources": [
+                                {"path": source, "enabled": True},
+                                {"path": source + os.sep, "enabled": False},
+                            ]
+                        }
+                    }
+                }
+            )
+            self.assertEqual(
+                config.get_asset_library_sources(core),
+                [{"path": os.path.normpath(source), "enabled": True}],
+            )
+
+            config.save_asset_library_sources(
+                core,
+                [{"path": source, "enabled": False}],
+            )
+            self.assertEqual(
+                core.saved[-1],
+                (
+                    config.CONFIG_SECTION,
+                    "asset_library",
+                    {
+                        "sources": [
+                            {
+                                "path": os.path.normpath(source),
+                                "enabled": False,
+                            }
+                        ]
+                    },
+                ),
+            )
 
     def test_ocio_override_updates_mapping_without_losing_other_projects(self):
         core = _Core(

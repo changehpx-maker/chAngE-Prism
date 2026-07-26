@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from change_prism.batch_import.file_processor import FileProcessor
 
@@ -136,3 +137,48 @@ class FileProcessorTests(unittest.TestCase):
                 "camera.fbx"
             )
         )
+
+    def test_copy_reuses_scanned_paths_without_rescanning_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            product = root / "products" / "published_ref"
+            server = root / "server" / "shot001"
+            source = (
+                server
+                / "shot_motion"
+                / "shot_animation"
+                / "fbx"
+                / "camera.fbx"
+            )
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"fbx")
+            item = {
+                "episode": "EP01",
+                "sequence": "SC01",
+                "shot": "shot001",
+                "server_dir": str(server),
+                "frame_range": [1001, 1100],
+                "steps": [
+                    {
+                        "label": "Animation",
+                        "files": {"fbx_files": [str(source)]},
+                    }
+                ],
+            }
+
+            with mock.patch(
+                "change_prism.batch_import.file_processor.collect_step_files",
+                side_effect=AssertionError("unexpected rescan"),
+            ):
+                data = FileProcessor(_Core(product)).process(
+                    item,
+                    {"type": "shot"},
+                    "show",
+                    copy_to_local=True,
+                )
+
+            copied = data["steps"]["Animation"]["fbx"][0]
+            self.assertTrue(Path(copied).is_file())
+            self.assertTrue(
+                copied.startswith(str(product / "v0001"))
+            )

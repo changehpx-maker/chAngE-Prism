@@ -1,6 +1,6 @@
 import os
 
-from qtpy.QtCore import Qt, QThread, Signal
+from qtpy.QtCore import QObject, Qt, QThread, Signal, Slot
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -53,6 +53,58 @@ class _SearchWorker(QThread):
             self.error_signal.emit(str(exc))
 
 
+class BatchFileWorker(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, processor, mode, payload):
+        super(BatchFileWorker, self).__init__()
+        self.processor = processor
+        self.mode = mode
+        self.payload = payload
+
+    @Slot()
+    def run(self):
+        try:
+            if self.mode == "product":
+                result = self.processor.build_product_data(
+                    self.payload
+                )
+            else:
+                self.processor.execute_review_copies(self.payload)
+                result = None
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.finished.emit(result)
+
+
+class BatchFileUiBridge(QObject):
+    def __init__(
+        self,
+        parent,
+        on_finished,
+        on_failed,
+        on_thread_finished,
+    ):
+        super(BatchFileUiBridge, self).__init__(parent)
+        self._on_finished = on_finished
+        self._on_failed = on_failed
+        self._on_thread_finished = on_thread_finished
+
+    @Slot(object)
+    def work_finished(self, result):
+        self._on_finished(result)
+
+    @Slot(str)
+    def work_failed(self, message):
+        self._on_failed(message)
+
+    @Slot()
+    def thread_finished(self):
+        self._on_thread_finished()
+
+
 class BatchImportDialog(QDialog):
     def __init__(
         self,
@@ -69,6 +121,7 @@ class BatchImportDialog(QDialog):
         self.finish_callback = finish_callback
         self.scan_results = []
         self._search_worker = None
+        self._import_running = False
 
         self.setWindowTitle("Batch Import from Server")
         self.setMinimumSize(1050, 620)
@@ -476,7 +529,10 @@ class BatchImportDialog(QDialog):
             "create_only": self.create_only_cb.isChecked(),
             "copy_to_local": self.copy_to_local_cb.isChecked(),
             "pdg_enabled": self.pdg_cb.isChecked(),
+            "_reporter": self,
+            "_finished_callback": self._on_import_finished,
         }
+        self._import_running = True
         self._set_busy(True, "Importing shots...")
         try:
             result = self.create_callback(data)
@@ -486,6 +542,7 @@ class BatchImportDialog(QDialog):
         self._on_import_finished(result)
 
     def _on_import_finished(self, result):
+        self._import_running = False
         if self.finish_callback:
             self.finish_callback(self, result)
         else:
@@ -497,6 +554,7 @@ class BatchImportDialog(QDialog):
             )
 
     def _on_import_error(self, message):
+        self._import_running = False
         self.core.popup(
             "Import failed:\n\n%s" % message, severity="error"
         )
@@ -518,6 +576,11 @@ class BatchImportDialog(QDialog):
         if self._search_worker is not None:
             self.core.popup(
                 "Server search is still running. Please wait."
+            )
+            return
+        if self._import_running:
+            self.core.popup(
+                "Shot import is still running. Please wait."
             )
             return
         super().reject()

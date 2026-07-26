@@ -38,6 +38,9 @@ def normalize_config(data):
     pdg = data.get("pdg", {})
     if not isinstance(pdg, dict):
         pdg = {}
+    asset_library = data.get("asset_library", {})
+    if not isinstance(asset_library, dict):
+        asset_library = {}
 
     return {
         "server_root": data.get("server_root", "") or _OS_DEFAULTS["server_root"],
@@ -56,6 +59,11 @@ def normalize_config(data):
         },
         "ocio_converter": {
             "project_overrides": dict(project_overrides),
+        },
+        "asset_library": {
+            "sources": _normalize_asset_library_sources(
+                asset_library.get("sources", [])
+            ),
         },
     }
 
@@ -84,6 +92,18 @@ def get_houdini_package_directory(core):
     return load_config(core)["pdg"]["houdini_package_directory"]
 
 
+def get_asset_library_sources(core):
+    return load_config(core)["asset_library"]["sources"]
+
+
+def save_asset_library_sources(core, sources):
+    section = _read_section(core)
+    library = section.get("asset_library", {})
+    library = dict(library) if isinstance(library, dict) else {}
+    library["sources"] = _normalize_asset_library_sources(sources)
+    core.setConfig(cat=CONFIG_SECTION, param="asset_library", val=library)
+
+
 def save_config_value(core, key, value):
     if key not in ("server_root", "local_projects_root"):
         raise ValueError("Unsupported chAngE_Prism setting: %s" % key)
@@ -107,3 +127,25 @@ def save_ocio_project_override(core, project_key, ocio_path):
         overrides.pop(project_key, None)
     converter["project_overrides"] = overrides
     core.setConfig(cat=CONFIG_SECTION, param="ocio_converter", val=converter)
+
+
+def _normalize_asset_library_sources(sources):
+    normalized = []
+    seen = set()
+    for item in sources if isinstance(sources, (list, tuple)) else []:
+        if isinstance(item, dict):
+            path = item.get("path", "")
+            enabled = bool(item.get("enabled", True))
+        else:
+            path = item
+            enabled = True
+        path = str(path or "").strip()
+        if not path:
+            continue
+        path = os.path.normpath(os.path.abspath(os.path.expanduser(path)))
+        key = os.path.normcase(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({"path": path, "enabled": enabled})
+    return normalized

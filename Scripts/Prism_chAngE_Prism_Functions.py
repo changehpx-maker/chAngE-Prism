@@ -3,6 +3,7 @@ from qtpy.QtWidgets import QMenu
 from PrismUtils.Decorators import err_catcher_plugin as err_catcher
 
 from change_prism.archive_browser.controller import ArchiveBrowserController
+from change_prism.asset_library.controller import AssetLibraryController
 from change_prism.batch_import.controller import BatchImportController
 from change_prism.houdini_archive.controller import HoudiniArchiveController
 from change_prism.nuke_archive.controller import NukeArchiveController
@@ -19,6 +20,7 @@ class Prism_chAngE_Prism_Functions(object):
         self.plugin = plugin
         self.batch_import = BatchImportController(core, plugin)
         self.archive_browser = ArchiveBrowserController(core)
+        self.asset_library = AssetLibraryController(core)
         self.nuke_archive = NukeArchiveController(
             core, refresh_callback=self.archive_browser.refresh
         )
@@ -85,6 +87,7 @@ class Prism_chAngE_Prism_Functions(object):
         action.triggered.connect(lambda checked=False: self.onOCIOConvert())
         self._chAngE_menu_action = origin.menubar.addMenu(menu)
         self.archive_browser.add_project_browser_tab(origin)
+        self.asset_library.add_project_browser_tab(origin)
 
     @err_catcher(name=__name__)
     def onPBShotContextMenu(self, origin, menu, index):

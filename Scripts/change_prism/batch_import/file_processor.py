@@ -25,6 +25,25 @@ class FileProcessor(object):
         self.core = core
 
     def process(self, item, entity, project_name, copy_to_local):
+        prepared = self.prepare(
+            item,
+            entity,
+            project_name,
+            copy_to_local,
+        )
+        shot_data = self.build_product_data(prepared)
+        self.finalize_product(prepared, shot_data)
+        review_copies = self.prepare_review_copies(entity, shot_data)
+        self.execute_review_copies(review_copies)
+        return shot_data
+
+    def prepare(
+        self,
+        item,
+        entity,
+        project_name,
+        copy_to_local,
+    ):
         del project_name
         server_dir = item.get("server_dir", "")
         product_root = self.core.products.createProduct(
@@ -35,11 +54,26 @@ class FileProcessor(object):
         )
         version_dir = os.path.join(str(product_root), str(version))
         os.makedirs(version_dir, exist_ok=True)
+        return {
+            "item": item,
+            "entity": entity,
+            "copy_to_local": bool(copy_to_local),
+            "server_dir": server_dir,
+            "product_root": str(product_root),
+            "version": version,
+            "version_dir": version_dir,
+        }
 
-        if copy_to_local and server_dir:
+    def build_product_data(self, prepared):
+        item = prepared["item"]
+        server_dir = prepared["server_dir"]
+        version_dir = prepared["version_dir"]
+        if prepared["copy_to_local"] and server_dir:
             self._copy_server_files(server_dir, version_dir)
-            shot_data = self._build_shot_data(
-                item, source_dir=version_dir
+            shot_data = self._build_copied_shot_data(
+                item,
+                server_dir,
+                version_dir,
             )
         else:
             shot_data = self._build_shot_data(item)
@@ -47,15 +81,69 @@ class FileProcessor(object):
         shot_data.update(
             {
                 "product": self.PRODUCT_NAME,
-                "product_version": version,
-                "product_root_path": str(product_root),
+                "product_version": prepared["version"],
+                "product_root_path": prepared["product_root"],
                 "products_path": version_dir,
             }
         )
-        self._write_product_version(version_dir, shot_data, version)
-        self._apply_shot_attributes(entity, shot_data)
-        self._import_media(entity, shot_data)
         return shot_data
+
+    def finalize_product(self, prepared, shot_data):
+        self._write_product_version(
+            prepared["version_dir"],
+            shot_data,
+            prepared["version"],
+        )
+        self._apply_shot_attributes(prepared["entity"], shot_data)
+
+    def _build_copied_shot_data(
+        self,
+        item,
+        server_dir,
+        version_dir,
+    ):
+        if not item.get("steps"):
+            return self._build_shot_data(
+                item,
+                source_dir=version_dir,
+            )
+
+        copied_item = dict(item)
+        copied_steps = []
+        for step in item.get("steps", []):
+            copied_step = dict(step)
+            copied_files = {}
+            for key, paths in step.get("files", {}).items():
+                copied_files[key] = [
+                    self._retarget_copied_path(
+                        path,
+                        server_dir,
+                        version_dir,
+                    )
+                    for path in paths
+                ]
+            copied_step["files"] = copied_files
+            copied_steps.append(copied_step)
+        copied_item["steps"] = copied_steps
+        return self._build_shot_data(
+            copied_item,
+            file_root=version_dir,
+        )
+
+    @staticmethod
+    def _retarget_copied_path(path, server_dir, version_dir):
+        source = os.path.abspath(os.path.normpath(path))
+        server_root = os.path.abspath(os.path.normpath(server_dir))
+        try:
+            common = os.path.commonpath([source, server_root])
+            if os.path.normcase(common) != os.path.normcase(server_root):
+                return path
+        except (OSError, ValueError):
+            return path
+        return os.path.join(
+            version_dir,
+            os.path.relpath(source, server_root),
+        )
 
     @staticmethod
     def _copy_server_files(server_dir, version_dir):
@@ -98,7 +186,12 @@ class FileProcessor(object):
             "steps": steps,
         }
 
-    def _build_shot_data(self, item, source_dir=None):
+    def _build_shot_data(
+        self,
+        item,
+        source_dir=None,
+        file_root=None,
+    ):
         pairs = (
             self._iter_fs_steps(source_dir)
             if source_dir
@@ -128,7 +221,10 @@ class FileProcessor(object):
             else item.get("frame_range")
         )
         return self._make_shot_data(
-            item, steps, frame_range, file_root=source_dir
+            item,
+            steps,
+            frame_range,
+            file_root=file_root or source_dir,
         )
 
     @staticmethod
@@ -184,12 +280,16 @@ class FileProcessor(object):
         self._import_media(entity, shot_data)
 
     def _import_media(self, entity, shot_data):
+        copies = self.prepare_review_copies(entity, shot_data)
+        self.execute_review_copies(copies)
+
+    def prepare_review_copies(self, entity, shot_data):
         media_files = []
         for label, step in shot_data.get("steps", {}).items():
             for path in step.get("review", []):
                 media_files.append((label, path))
         if not media_files:
-            return
+            return []
 
         identifier = "review"
         self.core.mediaProducts.createIdentifier(
@@ -220,16 +320,25 @@ class FileProcessor(object):
             location="global",
         )
         if not version_path:
-            return
+            return []
 
-        os.makedirs(str(version_path), exist_ok=True)
         duplicates = self._duplicate_basenames(
             path for _label, path in media_files
         )
         used = set()
+        copies = []
         for label, source in media_files:
             name = self._review_media_name(label, source, duplicates, used)
-            shutil.copy2(source, os.path.join(str(version_path), name))
+            copies.append(
+                (source, os.path.join(str(version_path), name))
+            )
+        return copies
+
+    @staticmethod
+    def execute_review_copies(copies):
+        for source, destination in copies:
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            shutil.copy2(source, destination)
 
     def _next_media_version(
         self, entity, identifier, media_type, current_version

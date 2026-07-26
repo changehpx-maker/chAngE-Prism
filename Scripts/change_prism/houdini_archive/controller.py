@@ -2,6 +2,7 @@ from __future__ import unicode_literals
 
 import os
 
+from change_prism import heavy_jobs
 from change_prism.houdini_archive import runner
 from change_prism.dcc_paths import derive_hython
 from change_prism.houdini_archive.service import (
@@ -51,13 +52,13 @@ class HoudiniArchiveController:
             return
         archive_root = os.path.join(shot_root, "Archives")
         source_key = os.path.normcase(os.path.abspath(source_hip))
-        if any(
-            job.get("source_key") == source_key
-            for job in self._active_jobs
+        if (
+            self._active_jobs
+            or heavy_jobs.is_active("archive_package")
         ):
             self.core.popup(
-                "This Houdini scene is already being archived in the "
-                "background:\n%s" % source_hip,
+                "A Houdini Archive job is already running in the "
+                "background.",
                 severity="info",
             )
             return
@@ -150,6 +151,13 @@ class HoudiniArchiveController:
             BackgroundUiBridge,
         )
 
+        if heavy_jobs.is_active("archive_package"):
+            self.core.popup(
+                "Another Archive package is already running.",
+                severity="info",
+            )
+            return
+
         thread = QThread(parent)
         worker = BackgroundPackageWorker(
             source_hip,
@@ -158,10 +166,13 @@ class HoudiniArchiveController:
             environment,
         )
         worker.moveToThread(thread)
+        token = object()
+        heavy_jobs.acquire("archive_package", token)
         job = {
             "thread": thread,
             "worker": worker,
             "source_key": source_key,
+            "heavy_job_token": token,
         }
         bridge = BackgroundUiBridge(
             parent,
@@ -226,6 +237,10 @@ class HoudiniArchiveController:
     def _cleanup_job(self, job):
         if job in self._active_jobs:
             self._active_jobs.remove(job)
+        heavy_jobs.release(
+            "archive_package",
+            job.get("heavy_job_token"),
+        )
         job["thread"].deleteLater()
         job["bridge"].deleteLater()
 

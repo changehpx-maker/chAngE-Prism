@@ -235,7 +235,7 @@ def calculate_archive_payload_stats(version_path, copy_jobs):
     return file_count, total_bytes
 
 
-def scan_archive_versions(archive_root):
+def scan_archive_versions(archive_root, deep_health=True):
     versions = []
     if not os.path.isdir(archive_root):
         return versions
@@ -249,6 +249,7 @@ def scan_archive_versions(archive_root):
                 scoped_department=candidate["department"],
                 scoped_task=candidate["task"],
                 version_scope=candidate["version_scope"],
+                deep_health=deep_health,
             )
         )
 
@@ -270,6 +271,7 @@ def _scan_version(
     scoped_department="",
     scoped_task="",
     version_scope="legacy",
+    deep_health=True,
 ):
     manifest_path = os.path.join(version_path, "manifest.json")
     incomplete = os.path.isfile(os.path.join(version_path, ".incomplete"))
@@ -347,6 +349,7 @@ def _scan_version(
         incomplete,
         references,
         scene_location_mismatch,
+        deep_health,
     )
     file_count = summary.get("file_count")
     total_bytes = summary.get("total_bytes")
@@ -455,6 +458,7 @@ def _health_status(
     incomplete,
     references,
     scene_location_mismatch=False,
+    deep_health=True,
 ):
     if (
         incomplete
@@ -468,7 +472,11 @@ def _health_status(
         return "Missing Files"
     if scene_location_mismatch:
         return "Missing Files"
-    if _manifest_payload_missing(version_path, manifest):
+    if _manifest_payload_missing(
+        version_path,
+        manifest,
+        deep=deep_health,
+    ):
         return "Missing Files"
     if source_scene and source_stat:
         if not os.path.isfile(source_scene):
@@ -497,7 +505,7 @@ def _health_status(
     return "Complete"
 
 
-def _manifest_payload_missing(version_path, manifest):
+def _manifest_payload_missing(version_path, manifest, deep=True):
     application = str(manifest.get("application") or "nuke").lower()
     for job in manifest.get("copy_jobs", []):
         destination = job.get("destination")
@@ -505,9 +513,10 @@ def _manifest_payload_missing(version_path, manifest):
             path = _resolve_manifest_path(version_path, destination)
             if not os.path.exists(path):
                 return True
-            for filename in job.get("files", []):
-                if not os.path.isfile(os.path.join(path, filename)):
-                    return True
+            if deep:
+                for filename in job.get("files", []):
+                    if not os.path.isfile(os.path.join(path, filename)):
+                        return True
         elif application == "nuke":
             material = job.get("material_folder")
             if material and not os.path.exists(

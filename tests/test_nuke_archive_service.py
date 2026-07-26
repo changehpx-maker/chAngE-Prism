@@ -57,6 +57,28 @@ def _write_script(path, read_paths, write_path=None, metadata_path=None):
 
 
 class NukeArchiveServiceTests(unittest.TestCase):
+    def test_execute_reuses_preflight_plan_without_second_tree_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            source.mkdir()
+            (source / "plate.1001.exr").write_bytes(b"frame")
+            script = root / "scene.nk"
+            _write_script(script, [source / "plate.%04d.exr"])
+            plan = service.build_package_plan(
+                script,
+                root / "Archives",
+            )
+
+            with mock.patch.object(
+                service,
+                "build_package_plan",
+                side_effect=AssertionError("unexpected second scan"),
+            ):
+                result = service.execute_package(plan)
+
+            self.assertTrue(Path(result["packaged_nk"]).is_file())
+
     def test_build_plan_reuses_source_directory_and_suffixes_name_collision(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

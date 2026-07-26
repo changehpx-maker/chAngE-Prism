@@ -1,7 +1,15 @@
 import os
+import shutil
 import subprocess
 
-from qtpy.QtCore import QProcess, QTemporaryDir, QTimer, Qt, Signal
+from qtpy.QtCore import (
+    QProcess,
+    QTemporaryDir,
+    QThread,
+    QTimer,
+    Qt,
+    Signal,
+)
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -48,6 +56,110 @@ from change_prism.ocio.service import (
 )
 
 
+_ACTIVE_BACKGROUND_THREADS = set()
+_TEMP_CLEANUP_PATHS = []
+_TEMP_CLEANUP_THREAD = None
+
+
+def _track_background_thread(thread):
+    _ACTIVE_BACKGROUND_THREADS.add(thread)
+
+    def release():
+        _ACTIVE_BACKGROUND_THREADS.discard(thread)
+        thread.deleteLater()
+
+    thread.finished.connect(release)
+    thread.start()
+
+
+class InventoryThread(QThread):
+    completed = Signal(object, int)
+    failed = Signal(str, int)
+
+    def __init__(self, oiiotool, config, generation):
+        super(InventoryThread, self).__init__()
+        self.oiiotool = oiiotool
+        self.config = config
+        self.generation = generation
+
+    def run(self):
+        try:
+            inventory = read_colorconfig_inventory(
+                self.oiiotool,
+                self.config,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc), self.generation)
+        else:
+            self.completed.emit(inventory, self.generation)
+
+
+class ExrInspectThread(QThread):
+    completed = Signal(object, int, str)
+    failed = Signal(str, int, str)
+
+    def __init__(self, oiiotool, paths, generation, mode):
+        super(ExrInspectThread, self).__init__()
+        self.oiiotool = oiiotool
+        self.paths = list(paths)
+        self.generation = generation
+        self.mode = mode
+
+    def run(self):
+        try:
+            results = []
+            for path in self.paths:
+                try:
+                    results.append(
+                        {"info": inspect_exr(self.oiiotool, path)}
+                    )
+                except Exception as exc:
+                    results.append({"error": str(exc)})
+        except Exception as exc:
+            self.failed.emit(str(exc), self.generation, self.mode)
+        else:
+            self.completed.emit(
+                results,
+                self.generation,
+                self.mode,
+            )
+
+
+class TempCleanupThread(QThread):
+    def __init__(self, path):
+        super(TempCleanupThread, self).__init__()
+        self.path = path
+
+    def run(self):
+        shutil.rmtree(self.path, ignore_errors=True)
+
+
+def _start_next_temp_cleanup():
+    global _TEMP_CLEANUP_THREAD
+    if _TEMP_CLEANUP_THREAD is not None or not _TEMP_CLEANUP_PATHS:
+        return
+    thread = TempCleanupThread(_TEMP_CLEANUP_PATHS.pop(0))
+    _TEMP_CLEANUP_THREAD = thread
+    _ACTIVE_BACKGROUND_THREADS.add(thread)
+
+    def release():
+        global _TEMP_CLEANUP_THREAD
+        _ACTIVE_BACKGROUND_THREADS.discard(thread)
+        _TEMP_CLEANUP_THREAD = None
+        thread.deleteLater()
+        _start_next_temp_cleanup()
+
+    thread.finished.connect(release)
+    thread.start()
+
+
+def _queue_temp_cleanup(path):
+    if not path:
+        return
+    _TEMP_CLEANUP_PATHS.append(path)
+    _start_next_temp_cleanup()
+
+
 class OCIOConvertDialog(QDialog):
     inventoryLoaded = Signal(bool)
     conversionFinished = Signal(object)
@@ -68,6 +180,7 @@ class OCIOConvertDialog(QDialog):
         self.inventory = {}
         self.process = None
         self.process_output = ""
+        self.process_output_chunks = []
         self.process_stage = ""
         self.cancel_requested = False
         self.run_jobs = []
@@ -84,6 +197,14 @@ class OCIOConvertDialog(QDialog):
         self.existing_policy = "replace"
         self.quick_mode = False
         self._quick_finished = False
+        self._inventory_generation = 0
+        self._inventory_thread = None
+        self._pending_inventory = None
+        self._inventory_requests = {}
+        self._inspect_generation = 0
+        self._inspect_thread = None
+        self._preview_request = None
+        self._conversion_preflight = None
 
         self.setWindowTitle("ACES / OCIO Media Converter")
         self.setMinimumSize(980, 720)
@@ -266,9 +387,12 @@ class OCIOConvertDialog(QDialog):
         QTimer.singleShot(0, self._load_deferred_inventory)
 
     def _load_deferred_inventory(self):
-        loaded = self._reload_inventory(source=self._initial_config_source)
-        self.convert_btn.setEnabled(loaded)
-        self.inventoryLoaded.emit(loaded)
+        queued = self._reload_inventory(
+            source=self._initial_config_source,
+            emit_loaded=True,
+        )
+        if not queued:
+            self.inventoryLoaded.emit(False)
 
     def start_quick_conversion(self, formats):
         formats = set(formats)
@@ -297,7 +421,13 @@ class OCIOConvertDialog(QDialog):
         )
         self._finish_quick_runner()
 
-    def _reload_inventory(self, source=None):
+    def _reload_inventory(
+        self,
+        source=None,
+        save_override=False,
+        restore_text="",
+        emit_loaded=False,
+    ):
         config = self.ocio_edit.text().strip()
         manual_change = (
             source is None
@@ -306,25 +436,85 @@ class OCIOConvertDialog(QDialog):
         if not self.tools.get("oiiotool"):
             self.config_status.setText("Cannot load OCIO config: oiiotool was not found.")
             self.inventory = {}
+            self.convert_btn.setEnabled(False)
             return False
         if not config:
             self.config_status.setText("Select an OCIO config.")
             self.inventory = {}
+            self.convert_btn.setEnabled(False)
             return False
         if not config.startswith("ocio://") and not os.path.isfile(config):
             self.config_status.setText("OCIO config not found: %s" % config)
             self.inventory = {}
-            return False
-        try:
-            inventory = read_colorconfig_inventory(
-                self.tools["oiiotool"], config
-            )
-        except Exception as exc:
-            self.inventory = {}
-            self.config_status.setText("Failed to load OCIO config: %s" % exc)
-            self.config_status.setStyleSheet("color: #e06c75;")
+            self.convert_btn.setEnabled(False)
             return False
 
+        self._inventory_generation += 1
+        generation = self._inventory_generation
+        request = {
+            "config": config,
+            "source": source,
+            "manual_change": manual_change,
+            "save_override": bool(save_override),
+            "restore_text": restore_text,
+            "emit_loaded": bool(emit_loaded),
+            "generation": generation,
+        }
+        self._inventory_requests[generation] = request
+        self._pending_inventory = request
+        self.inventory = {}
+        self.convert_btn.setEnabled(False)
+        self.config_status.setText("Loading OCIO configuration...")
+        self.config_status.setStyleSheet("")
+        self._start_pending_inventory()
+        return True
+
+    def _start_pending_inventory(self):
+        if (
+            self._inventory_thread is not None
+            or self._pending_inventory is None
+        ):
+            return
+        request = self._pending_inventory
+        self._pending_inventory = None
+        thread = InventoryThread(
+            self.tools["oiiotool"],
+            request["config"],
+            request["generation"],
+        )
+        thread.completed.connect(self._inventory_completed)
+        thread.failed.connect(self._inventory_failed)
+        self._inventory_thread = thread
+        _track_background_thread(thread)
+
+    def _inventory_completed(self, inventory, generation):
+        self._inventory_thread = None
+        request = self._inventory_requests.pop(generation, None)
+        if request and generation == self._inventory_generation:
+            self._apply_inventory(inventory, request)
+        self._start_pending_inventory()
+
+    def _inventory_failed(self, message, generation):
+        self._inventory_thread = None
+        request = self._inventory_requests.pop(generation, None)
+        if request and generation == self._inventory_generation:
+            self.inventory = {}
+            self.convert_btn.setEnabled(False)
+            self.config_status.setText(
+                "Failed to load OCIO config: %s" % message
+            )
+            self.config_status.setStyleSheet("color: #e06c75;")
+            if request["emit_loaded"]:
+                self.inventoryLoaded.emit(False)
+            restore_text = request["restore_text"]
+            if restore_text:
+                self.ocio_edit.setText(restore_text)
+                self._reload_inventory(source="project_override")
+        self._start_pending_inventory()
+
+    def _apply_inventory(self, inventory, request):
+        config = request["config"]
+        source = request["source"]
         self.inventory = inventory
         input_space, display, view = choose_inventory_defaults(inventory)
         self.input_combo.blockSignals(True)
@@ -349,7 +539,7 @@ class OCIOConvertDialog(QDialog):
         else:
             self.config_status.setText("OCIO config loaded: %s" % config)
             self.config_status.setStyleSheet("color: #98c379;")
-        if manual_change:
+        if request["manual_change"] or request["save_override"]:
             try:
                 save_ocio_project_override(
                     self.core, get_project_config_key(self.core), config
@@ -357,7 +547,9 @@ class OCIOConvertDialog(QDialog):
             except Exception as exc:
                 self._append_log("Could not save OCIO override: %s" % exc)
         self._loaded_config_text = config
-        return True
+        self.convert_btn.setEnabled(True)
+        if request["emit_loaded"]:
+            self.inventoryLoaded.emit(True)
 
     @staticmethod
     def _set_combo_text(combo, text):
@@ -389,16 +581,11 @@ class OCIOConvertDialog(QDialog):
             return
         previous = self.ocio_edit.text()
         self.ocio_edit.setText(path)
-        if self._reload_inventory(source="project_override"):
-            try:
-                save_ocio_project_override(
-                    self.core, get_project_config_key(self.core), path
-                )
-            except Exception as exc:
-                self._append_log("Could not save OCIO override: %s" % exc)
-        else:
-            self.ocio_edit.setText(previous)
-            self._reload_inventory(source="project_override")
+        self._reload_inventory(
+            source="project_override",
+            save_override=True,
+            restore_text=previous,
+        )
 
     def _reset_project_config(self):
         try:
@@ -493,7 +680,13 @@ class OCIOConvertDialog(QDialog):
         return validate_fps(self.fps_spin.value())
 
     def _start_preview(self):
-        if self.process and self.process.state() != QProcess.NotRunning:
+        if (
+            self._inspect_thread is not None
+            or (
+                self.process
+                and self.process.state() != QProcess.NotRunning
+            )
+        ):
             self.core.popup("A conversion is already running.")
             return
         job = self._selected_job()
@@ -503,14 +696,24 @@ class OCIOConvertDialog(QDialog):
         try:
             self._validate_common_settings()
             middle_path = job["files"][len(job["files"]) // 2]
-            info = inspect_exr(self.tools["oiiotool"], middle_path)
         except Exception as exc:
             self.core.popup(str(exc), severity="warning", parent=self)
             return
+        self._preview_request = {
+            "job": job,
+            "middle_path": middle_path,
+        }
+        self.preview_btn.setEnabled(False)
+        self.convert_btn.setEnabled(False)
+        self._start_inspection([middle_path], "preview")
 
+    def _begin_preview(self, job, middle_path, info):
+        self._release_temp_directory("preview_temp")
         self.preview_temp = QTemporaryDir()
         if not self.preview_temp.isValid():
             self.core.popup("Could not create a temporary preview directory.")
+            self.preview_btn.setEnabled(True)
+            self.convert_btn.setEnabled(bool(self.inventory))
             return
         output = os.path.join(self.preview_temp.path(), "preview.png")
         preview_job = dict(job)
@@ -534,11 +737,16 @@ class OCIOConvertDialog(QDialog):
             compression=None,
         )
         self.preview_output = output
-        self.preview_btn.setEnabled(False)
         self._start_process("preview", self.tools["oiiotool"], args)
 
     def start_conversion(self):
-        if self.process and self.process.state() != QProcess.NotRunning:
+        if (
+            self._inspect_thread is not None
+            or (
+                self.process
+                and self.process.state() != QProcess.NotRunning
+            )
+        ):
             return
         items = self._tree_items()
         if not items:
@@ -563,9 +771,8 @@ class OCIOConvertDialog(QDialog):
 
         self.successes = []
         self.failures = []
-        runnable = []
+        candidates = []
         output_owners = {}
-        conflicts = []
         for item in items:
             job = item.data(0, Qt.UserRole)
             job["_tree_item"] = item
@@ -576,9 +783,6 @@ class OCIOConvertDialog(QDialog):
                 item.setText(2, "Failed: missing frames")
                 continue
             try:
-                job["exr_info"] = inspect_exr(
-                    self.tools["oiiotool"], job["source_path"]
-                )
                 outputs = self._resolve_output_paths(job, formats)
             except Exception as exc:
                 self.failures.append("%s: %s" % (job["name"], exc))
@@ -597,17 +801,125 @@ class OCIOConvertDialog(QDialog):
                 continue
             for path in outputs.values():
                 output_owners[os.path.normcase(path)] = job["name"]
-                if os.path.exists(path):
-                    conflicts.append(path)
             job["outputs"] = outputs
             job["formats"] = list(formats)
+            candidates.append(job)
+
+        self._conversion_preflight = {
+            "items": items,
+            "formats": formats,
+            "candidates": candidates,
+        }
+        self.cancel_requested = False
+        self.progress.setVisible(True)
+        self.progress.setMaximum(len(items))
+        self.progress.setValue(len(items) - len(candidates))
+        self.convert_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(False)
+        self.preview_btn.setEnabled(False)
+        if not candidates:
+            self._complete_conversion_preflight([])
+            return
+        self._start_inspection(
+            [job["source_path"] for job in candidates],
+            "conversion",
+        )
+
+    def _start_inspection(self, paths, mode):
+        self._inspect_generation += 1
+        generation = self._inspect_generation
+        thread = ExrInspectThread(
+            self.tools["oiiotool"],
+            paths,
+            generation,
+            mode,
+        )
+        thread.completed.connect(self._inspection_completed)
+        thread.failed.connect(self._inspection_failed)
+        self._inspect_thread = thread
+        _track_background_thread(thread)
+
+    def _inspection_completed(self, results, generation, mode):
+        self._inspect_thread = None
+        if generation != self._inspect_generation:
+            return
+        if mode == "preview":
+            request = self._preview_request
+            self._preview_request = None
+            result = results[0] if results else {
+                "error": "No EXR metadata was returned."
+            }
+            if result.get("error"):
+                self.preview_btn.setEnabled(True)
+                self.convert_btn.setEnabled(bool(self.inventory))
+                self.core.popup(
+                    result["error"],
+                    severity="warning",
+                    parent=self,
+                )
+                return
+            self._begin_preview(
+                request["job"],
+                request["middle_path"],
+                result["info"],
+            )
+            return
+        self._complete_conversion_preflight(results)
+
+    def _inspection_failed(self, message, generation, mode):
+        self._inspect_thread = None
+        if generation != self._inspect_generation:
+            return
+        if mode == "preview":
+            self._preview_request = None
+            self.preview_btn.setEnabled(True)
+            self.convert_btn.setEnabled(bool(self.inventory))
+        else:
+            preflight = self._conversion_preflight or {}
+            for job in preflight.get("candidates", []):
+                job["_tree_item"].setText(2, "Failed: preflight")
+            self._conversion_preflight = None
+            self.progress.setVisible(False)
+            self.convert_btn.setEnabled(bool(self.inventory))
+            self.preview_btn.setEnabled(True)
+            self._finish_quick_runner()
+        self.core.popup(
+            "EXR preflight failed:\n%s" % message,
+            severity="warning",
+            parent=self,
+        )
+
+    def _complete_conversion_preflight(self, results):
+        preflight = self._conversion_preflight or {}
+        self._conversion_preflight = None
+        items = preflight.get("items", [])
+        candidates = preflight.get("candidates", [])
+        runnable = []
+        conflicts = []
+        for job, result in zip(candidates, results):
+            error = result.get("error")
+            if error:
+                self.failures.append(
+                    "%s: %s" % (job["name"], error)
+                )
+                job["_tree_item"].setText(2, "Failed: preflight")
+                continue
+            job["exr_info"] = result["info"]
             runnable.append(job)
+            conflicts.extend(
+                path
+                for path in job["outputs"].values()
+                if os.path.exists(path)
+            )
 
         if conflicts:
             policy = self._ask_existing_policy(conflicts)
             if policy == "cancel":
                 for job in runnable:
                     job["_tree_item"].setText(2, "Ready")
+                self.progress.setVisible(False)
+                self.convert_btn.setEnabled(bool(self.inventory))
+                self.preview_btn.setEnabled(True)
                 self._finish_quick_runner()
                 return
             self.existing_policy = policy
@@ -617,12 +929,9 @@ class OCIOConvertDialog(QDialog):
         self.run_jobs = runnable
         self.run_index = 0
         self.cancel_requested = False
-        self.progress.setVisible(True)
         self.progress.setMaximum(len(items))
         self.progress.setValue(len(items) - len(runnable))
-        self.convert_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
-        self.preview_btn.setEnabled(False)
         self._append_log("Starting %d job(s)." % len(runnable))
         if not runnable:
             self._finish_queue()
@@ -771,6 +1080,7 @@ class OCIOConvertDialog(QDialog):
     def _start_process(self, stage, program, args):
         self.process_stage = stage
         self.process_output = ""
+        self.process_output_chunks = []
         self._append_log(subprocess.list2cmdline([program] + list(args)))
         process = QProcess(self)
         self.process = process
@@ -785,9 +1095,8 @@ class OCIOConvertDialog(QDialog):
             return
         data = bytes(self.process.readAllStandardOutput()).decode("utf-8", "replace")
         if data:
-            self.process_output += data
-            for line in data.rstrip().splitlines():
-                self._append_log(line)
+            self.process_output_chunks.append(data)
+            self._append_log(data.rstrip())
 
     def _process_error(self, error):
         if error != QProcess.FailedToStart:
@@ -799,6 +1108,7 @@ class OCIOConvertDialog(QDialog):
 
     def _process_finished(self, exit_code, exit_status):
         self._read_process_output()
+        self.process_output = "".join(self.process_output_chunks)
         success = exit_code == 0 and exit_status == QProcess.NormalExit
         self._handle_process_result(success, self.process_output.strip())
 
@@ -813,6 +1123,7 @@ class OCIOConvertDialog(QDialog):
 
         if stage == "preview":
             self.preview_btn.setEnabled(True)
+            self.convert_btn.setEnabled(bool(self.inventory))
             if success and os.path.isfile(self.preview_output):
                 pixmap = QPixmap(self.preview_output)
                 if not pixmap.isNull():
@@ -891,9 +1202,7 @@ class OCIOConvertDialog(QDialog):
             job["_tree_item"].setText(2, "Done")
         else:
             job["_tree_item"].setText(2, "Failed")
-        if self.current_temp:
-            self.current_temp.remove()
-            self.current_temp = None
+        self._release_temp_directory("current_temp")
         self.current_job = None
         self.run_index += 1
         self.progress.setValue(self.progress.value() + 1)
@@ -919,9 +1228,7 @@ class OCIOConvertDialog(QDialog):
                 self.current_job["_tree_item"].setText(2, "Cancelled")
             for job in self.run_jobs[self.run_index + 1:]:
                 job["_tree_item"].setText(2, "Cancelled")
-        if self.current_temp:
-            self.current_temp.remove()
-            self.current_temp = None
+        self._release_temp_directory("current_temp")
         self.convert_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.preview_btn.setEnabled(True)
@@ -974,9 +1281,20 @@ class OCIOConvertDialog(QDialog):
             pass
 
     def _append_log(self, text):
+        if not text:
+            return
         self.log.appendPlainText(str(text))
         scrollbar = self.log.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+    def _release_temp_directory(self, attribute):
+        temporary = getattr(self, attribute, None)
+        setattr(self, attribute, None)
+        if temporary is None:
+            return
+        path = temporary.path()
+        temporary.setAutoRemove(False)
+        _queue_temp_cleanup(path)
 
     def closeEvent(self, event):
         if self.process and self.process.state() != QProcess.NotRunning:
@@ -991,4 +1309,7 @@ class OCIOConvertDialog(QDialog):
                 event.ignore()
                 return
             self.cancel_conversion()
+        else:
+            self._release_temp_directory("current_temp")
+            self._release_temp_directory("preview_temp")
         event.accept()
