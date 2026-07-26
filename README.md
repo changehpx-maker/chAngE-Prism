@@ -1,8 +1,8 @@
 # chAngE_Prism
 
-`chAngE_Prism v2.4.0` 是基于 Prism 2 的制作流程扩展插件，当前主要服务于镜头批量创建、外部图片资产管理、审片媒体、ACES/OCIO 转换以及 Nuke/Houdini Archive 打包。
+`chAngE_Prism v2.5.0` 是基于 Prism 2 的制作流程扩展插件，当前主要服务于镜头批量创建、外部图片资产管理、审片媒体、ACES/OCIO 转换以及 Nuke/Houdini Archive 打包。
 
-Windows Prism 2.1.2/2.1.3 是当前正式验证环境。Nuke Archive 纯核心额外兼容 Nuke 13.2 的 Python 3.7；Houdini Archive 支持 Houdini 20.5+。
+Windows Prism 2.1.2/2.1.3 是当前正式验证环境。Nuke Archive 纯核心额外兼容 Nuke 13.2 的 Python 3.7；Houdini Archive 和 Asset Library 环境光支持 Houdini 20.5+。
 
 ## 当前功能
 
@@ -34,6 +34,7 @@ Scripts/
       dialog.py
     config.py
     dcc_paths.py
+    houdini_asset_bridge.py
     settings/
       controller.py
       dialog.py
@@ -98,7 +99,11 @@ Prism 用户设置。旧版根目录 `config.json` 不再参与运行，可在�
 - 左侧目录树控制浏览位置，右侧只显示当前目录的直属图片。
 - 非空搜索会搜索所有启用源；同一源内具有相同文件名、大小和修改时间的多分类副本合并显示，并可在详情中选择实际路径。
 - 选择目录后点击 `Generate Thumbnails`，只为该目录直属素材生成缺失或过期的缩略图；浏览和刷新只读取已有缓存。生成时总并发最多 4 个，其中 HDR/EXR 最多 2 个。缩略图写入素材旁的 `_thumbs/<原文件名含扩展>.jpg`，移除源不会删除素材或缩略图。
-- 首版只有打开、Explorer 定位和复制路径，不执行 DCC 导入。
+- 工具栏 `Size` 支持 `Small`、`Medium`、`Large`，独立 Prism 与 Houdini 分别记忆选择；切换只改变绘制和网格，不会重建 `_thumbs`。
+- Details 左侧显示当前 `Active Location` 的大图预览，并且只读取已有且未过期的 `_thumbs` 缓存；无缓存时不会解码原始 HDR/EXR。
+- 在 Houdini 内嵌的 Project Browser 中右键 HDR/EXR，可直接在当前 Object 或 LOP 网络创建原生 Environment Light 或 Solaris Dome Light；其他网络只提示切换到支持的网络，不再弹出目标选择器。
+- Houdini 内嵌界面会修正高 DPI 缩略图尺寸并使用更紧凑的网格。
+- Houdini 灯光始终使用当前 `Active Location` 的绝对路径，不复制素材、不修改已有灯光，也不自动保存 HIP。
 
 完整说明见 [Asset Library.md](Asset%20Library.md)。
 
@@ -190,9 +195,13 @@ Houdini HOM 冒烟测试：
 & "C:\Program Files\Side Effects Software\Houdini 20.5.684\bin\hython.exe" tests\houdini_archive_smoke.py
 & "C:\Program Files\Side Effects Software\Houdini 21.0.631\bin\hython.exe" tests\houdini_archive_smoke.py
 & "C:\Program Files\Side Effects Software\Houdini 22.0.368\bin\hython.exe" tests\houdini_archive_smoke.py
+
+& "C:\Program Files\Side Effects Software\Houdini 20.5.684\bin\hython.exe" tests\houdini_asset_library_smoke.py
+& "C:\Program Files\Side Effects Software\Houdini 21.0.631\bin\hython.exe" tests\houdini_asset_library_smoke.py
+& "C:\Program Files\Side Effects Software\Houdini 22.0.368\bin\hython.exe" tests\houdini_asset_library_smoke.py
 ```
 
-headless/HOM 测试需要对应 DCC 许可证。最近一次 Prism 2.1.3 / PySide6 环境验证共运行 128 项测试：通过 127 项，跳过 1 项需要 Windows 目录符号链接权限的测试；Houdini 20.5.684、21.0.631、22.0.368 的 HOM 冒烟测试此前均已通过。
+headless/HOM 测试需要对应 DCC 许可证。最近一次 Prism 2.1.2/2.1.3 / PySide6 环境验证均运行 148 项测试：通过 141 项，跳过 7 项需要额外权限或外部工具的环境型测试；Houdini 20.5.684、21.0.631、22.0.368 的 Asset Library HOM 冒烟测试均已通过。
 
 ## 进一步文档
 

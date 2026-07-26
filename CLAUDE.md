@@ -22,6 +22,7 @@ Prism_chAngE_Prism_Functions.py
 change_prism/
   config.py
   dcc_paths.py
+  houdini_asset_bridge.py
   archive_core.py
   <feature>/
     controller.py
@@ -93,8 +94,8 @@ change_prism/
 
 - `archive_core.py`、Archive Browser 和 Nuke Archive 核心保持 Python 3.7 / Qt5 兼容。
 - Nuke `service.py`/CLI 只用 Python 3.7 标准库，不导入 Prism、Qt 或 Nuke；禁止 `list[str]`、`Path.is_relative_to()`、`copytree(dirs_exist_ok=...)` 和结构化模式匹配。
-- `hou` 只能在 `houdini_archive/houdini_worker.py` 中导入；依赖扫描、路径改写和 Save As 在单次 Hython Worker 中完成。
-- 原始 DCC 场景永远不修改。新 Archive 使用事务目录，失败或取消时只清理本次新版本。
+- Archive 的 `hou` 只能在 `houdini_archive/houdini_worker.py` 中导入；依赖扫描、路径改写和 Save As 在单次 Hython Worker 中完成。`houdini_asset_bridge.py` 是唯一例外，只能在 Houdini 交互进程中按用户明确动作懒加载 `hou`。
+- Archive 永远不修改原始 DCC 场景。新 Archive 使用事务目录，失败或取消时只清理本次新版本。
 - Archive 版本仅按 Task 独立递增；Department 只作为元数据。必须继续读取旧 Archive 布局和旧 manifest。
 - Archive 刷新只做快速存在性检查，不逐帧读素材或计算校验和。
 - Archive 删除是永久操作，必须同时验证 Archives 根、版本父目录、`v####`、规范化路径、真实路径和 `.incomplete` 状态。
@@ -105,6 +106,8 @@ change_prism/
 - 扫描不得跟随链接目录，必须排除 `_thumbs`；后台结果使用 generation 校验，过期结果不能覆盖新配置。
 - 缩略图只由用户手动触发；后台总并发最多 4 个，其中 HDR/EXR 最多 2 个；浏览和刷新只读取缓存。
 - Remove Source 只改配置，不删除素材或 `_thumbs`。
+- Houdini HDRI 动作只能由 Asset Library GUI 主线程触发，不得从扫描或缩略图线程调用 `hou`；目标优先取当前可见 Network Editor 的 `pwd()`，无 Network Editor 时才回退 `hou.pwd()`，网络类别必须使用 `childTypeCategory()` 判断。
+- Object 网络创建原生 `envlight`，LOP 网络创建 `domelight::3.0`；只引用当前 Active Location 的绝对路径，不复制素材或自动保存 HIP。
 - ACES/OCIO 转换不得调用、复制或依赖付费 Media Extension 的代码、二进制和资源。
 - Daily Review 目录复制采用合并覆盖，不删除目标中额外内容。
 
@@ -120,6 +123,7 @@ Qt 测试应在 Prism 自带 Python/PySide 环境运行。真实 DCC 验证入�
 
 - Nuke 13：`tests/nuke13_archive_smoke.py`
 - Houdini：`tests/houdini_archive_smoke.py`
+- Houdini Asset Library：`tests/houdini_asset_library_smoke.py`
 - OCIO bundled tools：`tests/test_ocio_integration.py`
 
 不要在本文记录“当前通过多少项”或具体安装 build；测试结果和本机路径会过期。

@@ -4,6 +4,7 @@ import sys
 
 CONFIG_SECTION = "change_prism"
 SETTINGS_LOCATION = "Prism Settings > User > chAngE_Prism"
+ASSET_LIBRARY_THUMBNAIL_SIZES = ("small", "medium", "large")
 
 _OS_DEFAULTS = {
     "server_root": "P:\\" if sys.platform == "win32" else "",
@@ -64,6 +65,9 @@ def normalize_config(data):
             "sources": _normalize_asset_library_sources(
                 asset_library.get("sources", [])
             ),
+            "thumbnail_sizes": _normalize_asset_library_thumbnail_sizes(
+                asset_library.get("thumbnail_sizes", {})
+            ),
         },
     }
 
@@ -101,6 +105,31 @@ def save_asset_library_sources(core, sources):
     library = section.get("asset_library", {})
     library = dict(library) if isinstance(library, dict) else {}
     library["sources"] = _normalize_asset_library_sources(sources)
+    core.setConfig(cat=CONFIG_SECTION, param="asset_library", val=library)
+
+
+def get_asset_library_thumbnail_size(core, host_key):
+    sizes = load_config(core)["asset_library"]["thumbnail_sizes"]
+    return sizes.get(str(host_key or "").lower(), "medium")
+
+
+def save_asset_library_thumbnail_size(core, host_key, size_key):
+    host_key = str(host_key or "").lower()
+    if host_key not in ("houdini", "standalone"):
+        raise ValueError("Unsupported Asset Library host: %s" % host_key)
+    size_key = str(size_key or "").lower()
+    if size_key not in ASSET_LIBRARY_THUMBNAIL_SIZES:
+        raise ValueError(
+            "Unsupported Asset Library thumbnail size: %s" % size_key
+        )
+    section = _read_section(core)
+    library = section.get("asset_library", {})
+    library = dict(library) if isinstance(library, dict) else {}
+    sizes = _normalize_asset_library_thumbnail_sizes(
+        library.get("thumbnail_sizes", {})
+    )
+    sizes[host_key] = size_key
+    library["thumbnail_sizes"] = sizes
     core.setConfig(cat=CONFIG_SECTION, param="asset_library", val=library)
 
 
@@ -148,4 +177,14 @@ def _normalize_asset_library_sources(sources):
             continue
         seen.add(key)
         normalized.append({"path": path, "enabled": enabled})
+    return normalized
+
+
+def _normalize_asset_library_thumbnail_sizes(sizes):
+    sizes = dict(sizes) if isinstance(sizes, dict) else {}
+    normalized = {}
+    for host_key in ("houdini", "standalone"):
+        value = str(sizes.get(host_key, "") or "").lower()
+        if value in ASSET_LIBRARY_THUMBNAIL_SIZES:
+            normalized[host_key] = value
     return normalized

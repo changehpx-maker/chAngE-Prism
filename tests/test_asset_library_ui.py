@@ -11,8 +11,8 @@ sys.path.insert(0, str(ROOT / "Scripts"))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from qtpy.QtCore import QSize, Qt
-    from qtpy.QtGui import QImage
+    from qtpy.QtCore import QRect, QSize, Qt
+    from qtpy.QtGui import QImage, QPixmap
     from qtpy.QtWidgets import (
         QApplication,
         QMenuBar,
@@ -23,12 +23,14 @@ try:
     from change_prism.asset_library import service
     from change_prism.asset_library.dialog import (
         AssetLibraryWidget,
+        HoudiniAssetItemDelegate,
         LazyAssetLibraryWidget,
         _ThumbnailThread,
     )
 except Exception:
     QApplication = None
     AssetLibraryWidget = None
+    HoudiniAssetItemDelegate = None
     LazyAssetLibraryWidget = None
     _ThumbnailThread = None
 
@@ -50,12 +52,17 @@ class _Media:
 
 
 class _Core:
-    def __init__(self, sources=None):
+    def __init__(self, sources=None, plugin_name="Standalone"):
         self.data = {
             "change_prism": {
                 "asset_library": {"sources": list(sources or [])}
             }
         }
+        self.appPlugin = type(
+            "AppPlugin",
+            (object,),
+            {"pluginName": plugin_name},
+        )()
         self.media = _Media() if QApplication else None
         self.popups = []
 
@@ -193,6 +200,368 @@ class AssetLibraryUiTests(unittest.TestCase):
                 )
             finally:
                 widget.close()
+        app.processEvents()
+
+    def test_houdini_context_action_uses_active_physical_location(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            first = os.path.join(tmp, "first.exr")
+            second = os.path.join(tmp, "second.exr")
+            Path(first).write_bytes(b"first")
+            Path(second).write_bytes(b"second")
+            widget = AssetLibraryWidget(_Core())
+
+            class FakeBridge:
+                def __init__(self):
+                    self.created = []
+
+                def describe_action(self, path):
+                    self.described_path = path
+                    return {
+                        "label": "Create Dome Light in /obj/lopnet",
+                        "target": {
+                            "kind": "lop",
+                            "network_path": "/obj/lopnet",
+                            "display_label": "/obj/lopnet \u2014 Dome Light",
+                        },
+                    }
+
+                def create_environment_light(self, path, target_path):
+                    self.created.append((path, target_path))
+                    return {
+                        "success": True,
+                        "message": "created",
+                        "node_path": "/obj/lopnet/hdri_second",
+                    }
+
+            class FakeMenu:
+                def __init__(self):
+                    self.separator_count = 0
+                    self.actions = []
+
+                def addSeparator(self):
+                    self.separator_count += 1
+
+                def addAction(self, label, callback):
+                    self.actions.append((label, callback))
+                    return callback
+
+            bridge = FakeBridge()
+            menu = FakeMenu()
+            widget._houdini_asset_bridge = bridge
+            try:
+                widget.location_combo.addItem("first", first)
+                widget.location_combo.addItem("second", second)
+                widget.location_combo.setCurrentIndex(1)
+                widget._add_houdini_asset_action(
+                    menu,
+                    widget._selected_path(),
+                )
+
+                self.assertEqual(bridge.described_path, second)
+                self.assertEqual(menu.separator_count, 1)
+                self.assertEqual(
+                    menu.actions[0][0],
+                    "Create Dome Light in /obj/lopnet",
+                )
+                menu.actions[0][1](False)
+                self.assertEqual(
+                    bridge.created,
+                    [(second, "/obj/lopnet")],
+                )
+            finally:
+                widget.close()
+        app.processEvents()
+
+    def test_unsupported_houdini_context_only_shows_warning(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "sky.hdr")
+            Path(path).write_bytes(b"hdr")
+            core = _Core()
+            widget = AssetLibraryWidget(core)
+
+            class FakeBridge:
+                def __init__(self):
+                    self.created = []
+
+                def create_environment_light(self, asset_path, target_path):
+                    self.created.append((asset_path, target_path))
+                    return {
+                        "success": True,
+                        "message": "created",
+                        "node_path": "/stage/hdri_sky",
+                    }
+
+            bridge = FakeBridge()
+            widget._houdini_asset_bridge = bridge
+            try:
+                with mock.patch.object(widget, "_show_warning") as warning:
+                    widget._create_houdini_environment_light(path, None)
+                self.assertEqual(bridge.created, [])
+                warning.assert_called_once()
+                self.assertIn(
+                    "Open /obj or enter a LOP network",
+                    warning.call_args[0][0],
+                )
+            finally:
+                widget.close()
+        app.processEvents()
+
+    def test_houdini_action_is_not_added_when_bridge_is_unavailable(self):
+        app = QApplication.instance() or QApplication([])
+        widget = AssetLibraryWidget(_Core())
+
+        class FakeBridge:
+            @staticmethod
+            def describe_action(_path):
+                return None
+
+        class FakeMenu:
+            def __init__(self):
+                self.separator_count = 0
+
+            def addSeparator(self):
+                self.separator_count += 1
+
+        menu = FakeMenu()
+        widget._houdini_asset_bridge = FakeBridge()
+        try:
+            self.assertIsNone(
+                widget._add_houdini_asset_action(menu, "plate.png")
+            )
+            self.assertEqual(menu.separator_count, 0)
+        finally:
+            widget.close()
+        app.processEvents()
+
+    def test_houdini_thumbnail_grid_is_compact(self):
+        app = QApplication.instance() or QApplication([])
+        standalone = AssetLibraryWidget(_Core())
+        houdini = AssetLibraryWidget(
+            _Core(plugin_name="Houdini")
+        )
+        try:
+            self.assertEqual(
+                standalone.asset_view.gridSize(),
+                QSize(276, 194),
+            )
+            self.assertEqual(standalone.asset_view.spacing(), 6)
+            self.assertEqual(
+                houdini.asset_view.gridSize(),
+                QSize(264, 190),
+            )
+            self.assertEqual(houdini.asset_view.spacing(), 2)
+            self.assertIsInstance(
+                houdini.asset_view.itemDelegate(),
+                HoudiniAssetItemDelegate,
+            )
+            self.assertNotIsInstance(
+                standalone.asset_view.itemDelegate(),
+                HoudiniAssetItemDelegate,
+            )
+            image = QImage(256, 128, QImage.Format_RGB32)
+            pixmap = QPixmap.fromImage(image)
+            thumbnail_rect = (
+                houdini.asset_view.itemDelegate()._thumbnail_rect(
+                    QRect(0, 0, 264, 190),
+                    pixmap,
+                )
+            )
+            self.assertEqual(thumbnail_rect.size(), QSize(256, 128))
+        finally:
+            standalone.close()
+            houdini.close()
+        app.processEvents()
+
+    def test_thumbnail_size_is_saved_separately_for_each_host(self):
+        app = QApplication.instance() or QApplication([])
+        core = _Core(plugin_name="Houdini")
+        library = core.data["change_prism"]["asset_library"]
+        library["thumbnail_sizes"] = {
+            "houdini": "large",
+            "standalone": "small",
+        }
+        houdini = AssetLibraryWidget(core)
+        core.appPlugin.pluginName = "Standalone"
+        standalone = AssetLibraryWidget(core)
+        try:
+            self.assertEqual(
+                houdini.thumbnail_size_combo.currentData(),
+                "large",
+            )
+            self.assertEqual(
+                houdini.asset_view.iconSize(),
+                QSize(384, 192),
+            )
+            self.assertEqual(
+                houdini.asset_view.gridSize(),
+                QSize(392, 254),
+            )
+            self.assertEqual(
+                standalone.thumbnail_size_combo.currentData(),
+                "small",
+            )
+            self.assertEqual(
+                standalone.asset_view.iconSize(),
+                QSize(160, 80),
+            )
+            self.assertEqual(
+                standalone.asset_view.gridSize(),
+                QSize(180, 146),
+            )
+
+            image = QImage(256, 128, QImage.Format_RGB32)
+            image.fill(0xFF336699)
+            standalone.asset_model.set_records(
+                [{"record_key": "asset", "filename": "asset.exr"}]
+            )
+            standalone.asset_model.set_thumbnail("asset", image)
+            previous_pixmap = standalone.asset_model.pixmaps["asset"]
+            medium_index = standalone.thumbnail_size_combo.findData(
+                "medium"
+            )
+            with mock.patch(
+                "change_prism.asset_library.dialog._ThumbnailThread"
+            ) as thumbnail_thread:
+                standalone.thumbnail_size_combo.setCurrentIndex(
+                    medium_index
+                )
+                thumbnail_thread.assert_not_called()
+            self.assertEqual(
+                core.data["change_prism"]["asset_library"][
+                    "thumbnail_sizes"
+                ],
+                {"houdini": "large", "standalone": "medium"},
+            )
+            self.assertEqual(
+                standalone.asset_view.iconSize(),
+                QSize(256, 128),
+            )
+            self.assertIs(
+                standalone.asset_model.thumbnail_images["asset"],
+                image,
+            )
+            self.assertIsNot(
+                standalone.asset_model.pixmaps["asset"],
+                previous_pixmap,
+            )
+        finally:
+            standalone.close()
+            houdini.close()
+        app.processEvents()
+
+    def test_detail_preview_reads_only_an_existing_thumbnail_cache(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            cached_source = os.path.join(tmp, "cached.exr")
+            uncached_source = os.path.join(tmp, "uncached.exr")
+            Path(cached_source).write_bytes(b"cached source")
+            Path(uncached_source).write_bytes(b"uncached source")
+
+            cache_path = service.thumbnail_path(cached_source)
+            os.makedirs(os.path.dirname(cache_path))
+            cache_image = QImage(256, 128, QImage.Format_RGB32)
+            cache_image.fill(0xFF336699)
+            self.assertTrue(cache_image.save(cache_path, "JPG"))
+            source_mtime = os.path.getmtime(cached_source)
+            os.utime(
+                cache_path,
+                (source_mtime + 1, source_mtime + 1),
+            )
+
+            widget = AssetLibraryWidget(_Core())
+            try:
+                records = []
+                for index, path in enumerate(
+                    (cached_source, uncached_source)
+                ):
+                    records.append(
+                        {
+                            "record_key": ("source", index),
+                            "filename": os.path.basename(path),
+                            "path": path,
+                            "relative_directory": "",
+                            "size": os.path.getsize(path),
+                            "mtime_ns": os.stat(path).st_mtime_ns,
+                            "location_count": 1,
+                        }
+                    )
+                widget.asset_model.set_records(records)
+
+                widget.asset_view.setCurrentIndex(
+                    widget.asset_model.index(0, 0)
+                )
+                preview = widget.detail_preview.pixmap()
+                self.assertIsNotNone(preview)
+                self.assertFalse(preview.isNull())
+                self.assertEqual(widget.detail_preview.text(), "")
+
+                widget.asset_view.setCurrentIndex(
+                    widget.asset_model.index(1, 0)
+                )
+                self.assertEqual(
+                    widget.detail_preview.text(),
+                    "No cached preview",
+                )
+                self.assertFalse(
+                    os.path.exists(
+                        service.thumbnail_path(uncached_source)
+                    )
+                )
+            finally:
+                widget.close()
+        app.processEvents()
+
+    def test_thumbnail_pixmap_uses_physical_pixels_for_device_ratio(self):
+        app = QApplication.instance() or QApplication([])
+        widget = AssetLibraryWidget(_Core())
+
+        class FakeImage:
+            def __init__(self):
+                self.scaled_size = None
+
+            def scaled(self, size, _aspect_mode, _transform_mode):
+                self.scaled_size = QSize(size)
+                return self
+
+        class FakePixmap:
+            def __init__(self):
+                self.ratio = 1.0
+
+            def isNull(self):
+                return False
+
+            def setDevicePixelRatio(self, ratio):
+                self.ratio = ratio
+
+        pixmap = FakePixmap()
+        image = FakeImage()
+
+        class FakeQPixmap:
+            @staticmethod
+            def fromImage(_image):
+                return pixmap
+
+        widget.asset_model.set_records(
+            [{"record_key": "asset", "filename": "asset.exr"}]
+        )
+        widget.asset_model.set_icon_metrics(QSize(256, 144), 2.0)
+        try:
+            with mock.patch(
+                "change_prism.asset_library.dialog.QPixmap",
+                FakeQPixmap,
+            ), mock.patch(
+                "change_prism.asset_library.dialog.QIcon",
+                side_effect=lambda value: value,
+            ):
+                widget.asset_model.set_thumbnail("asset", image)
+            self.assertEqual(image.scaled_size, QSize(512, 288))
+            self.assertEqual(pixmap.ratio, 2.0)
+            self.assertIs(widget.asset_model.icons["asset"], pixmap)
+            self.assertIs(widget.asset_model.pixmaps["asset"], pixmap)
+        finally:
+            widget.close()
         app.processEvents()
 
     def test_regular_thumbnail_is_cached_with_original_extension(self):

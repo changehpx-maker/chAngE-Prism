@@ -11,6 +11,7 @@ from qtpy.QtCore import (
     QAbstractListModel,
     QEvent,
     QModelIndex,
+    QRect,
     QSize,
     Qt,
     QThread,
@@ -31,6 +32,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -41,6 +43,8 @@ from qtpy.QtWidgets import (
     QPushButton,
     QSplitter,
     QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -49,16 +53,30 @@ from qtpy.QtWidgets import (
 
 from change_prism.asset_library import service
 from change_prism.config import (
+    get_asset_library_thumbnail_size,
     get_asset_library_sources,
+    save_asset_library_thumbnail_size,
     save_asset_library_sources,
 )
+from change_prism.houdini_asset_bridge import HoudiniAssetBridge
 
 
 SOURCE_ID_ROLE = Qt.UserRole
 PATH_ROLE = Qt.UserRole + 1
 SOURCE_ROOT_ROLE = Qt.UserRole + 2
 ASSET_ROLE = Qt.UserRole
+THUMBNAIL_PIXMAP_ROLE = Qt.UserRole + 10
 THUMBNAIL_SIZE = QSize(256, 144)
+THUMBNAIL_SIZE_PRESETS = (
+    ("Small", "small", QSize(160, 80)),
+    ("Medium", "medium", QSize(256, 128)),
+    ("Large", "large", QSize(384, 192)),
+)
+THUMBNAIL_SIZE_BY_KEY = {
+    key: QSize(size)
+    for _label, key, size in THUMBNAIL_SIZE_PRESETS
+}
+DETAIL_PREVIEW_SIZE = QSize(384, 192)
 MAX_THUMBNAIL_WORKERS = 4
 MAX_HDR_THUMBNAIL_WORKERS = 2
 HDR_EXTENSIONS = (".exr", ".hdr")
@@ -241,8 +259,12 @@ class AssetListModel(QAbstractListModel):
     def __init__(self, placeholder_icon, parent=None):
         super(AssetListModel, self).__init__(parent)
         self.placeholder_icon = placeholder_icon
+        self.icon_size = QSize(256, 144)
+        self.device_pixel_ratio = 1.0
         self.records = []
         self.icons = {}
+        self.pixmaps = {}
+        self.thumbnail_images = {}
         self._rows_by_key = {}
 
     def rowCount(self, parent=QModelIndex()):
@@ -263,6 +285,8 @@ class AssetListModel(QAbstractListModel):
                 record.get("record_key"),
                 self.placeholder_icon,
             )
+        if role == THUMBNAIL_PIXMAP_ROLE:
+            return self.pixmaps.get(record.get("record_key"))
         if role == Qt.ToolTipRole:
             count = int(record.get("location_count", 1))
             if count > 1:
@@ -279,6 +303,8 @@ class AssetListModel(QAbstractListModel):
         self.beginResetModel()
         self.records = list(records)
         self.icons = {}
+        self.pixmaps = {}
+        self.thumbnail_images = {}
         self._rows_by_key = {
             record.get("record_key"): row
             for row, record in enumerate(self.records)
@@ -290,11 +316,68 @@ class AssetListModel(QAbstractListModel):
             return None
         return self.records[index.row()]
 
+    def set_icon_metrics(self, icon_size, device_pixel_ratio):
+        icon_size = QSize(icon_size)
+        try:
+            ratio = float(device_pixel_ratio)
+        except Exception:
+            ratio = 1.0
+        ratio = max(1.0, ratio)
+        changed = (
+            self.icon_size != icon_size
+            or abs(self.device_pixel_ratio - ratio) > 0.001
+        )
+        self.icon_size = icon_size
+        self.device_pixel_ratio = ratio
+        if changed:
+            self._rebuild_thumbnail_pixmaps()
+
     def set_thumbnail(self, record_key, image):
-        pixmap = QPixmap.fromImage(image)
+        self.thumbnail_images[record_key] = image
+        self._set_thumbnail_pixmap(record_key, image)
+
+    def _rebuild_thumbnail_pixmaps(self):
+        for record_key, image in list(self.thumbnail_images.items()):
+            self._set_thumbnail_pixmap(record_key, image)
+
+    def _set_thumbnail_pixmap(self, record_key, image):
+        physical_size = QSize(
+            max(
+                1,
+                int(
+                    round(
+                        self.icon_size.width()
+                        * self.device_pixel_ratio
+                    )
+                ),
+            ),
+            max(
+                1,
+                int(
+                    round(
+                        self.icon_size.height()
+                        * self.device_pixel_ratio
+                    )
+                ),
+            ),
+        )
+        display_image = image.scaled(
+            physical_size,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        pixmap = QPixmap.fromImage(display_image)
         if pixmap.isNull():
             return
+        set_device_pixel_ratio = getattr(
+            pixmap,
+            "setDevicePixelRatio",
+            None,
+        )
+        if callable(set_device_pixel_ratio):
+            set_device_pixel_ratio(self.device_pixel_ratio)
         self.icons[record_key] = QIcon(pixmap)
+        self.pixmaps[record_key] = pixmap
         row = self._rows_by_key.get(record_key)
         if row is None:
             return
@@ -302,8 +385,90 @@ class AssetListModel(QAbstractListModel):
         self.dataChanged.emit(
             index,
             index,
-            [Qt.DecorationRole],
+            [Qt.DecorationRole, THUMBNAIL_PIXMAP_ROLE],
         )
+
+
+class HoudiniAssetItemDelegate(QStyledItemDelegate):
+    """Draw full-size thumbnails without Houdini QIcon rescaling."""
+
+    def __init__(self, icon_size, parent=None):
+        super(HoudiniAssetItemDelegate, self).__init__(parent)
+        self.icon_size = QSize(icon_size)
+
+    def set_icon_size(self, icon_size):
+        self.icon_size = QSize(icon_size)
+
+    def paint(self, painter, option, index):
+        item_option = QStyleOptionViewItem(option)
+        self.initStyleOption(item_option, index)
+        text = item_option.text
+        item_option.icon = QIcon()
+        item_option.text = ""
+        widget = item_option.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawControl(
+            QStyle.CE_ItemViewItem,
+            item_option,
+            painter,
+            widget,
+        )
+
+        pixmap = index.data(THUMBNAIL_PIXMAP_ROLE)
+        if pixmap is not None and not pixmap.isNull():
+            target = self._thumbnail_rect(option.rect, pixmap)
+            painter.drawPixmap(target, pixmap)
+
+        text_rect = QRect(
+            option.rect.x() + 4,
+            option.rect.y() + self.icon_size.height() + 8,
+            max(1, option.rect.width() - 8),
+            max(1, option.rect.height() - self.icon_size.height() - 10),
+        )
+        if option.state & QStyle.State_Selected:
+            text_color = item_option.palette.highlightedText().color()
+        else:
+            text_color = item_option.palette.text().color()
+        painter.save()
+        painter.setFont(item_option.font)
+        painter.setPen(text_color)
+        painter.drawText(
+            text_rect,
+            Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap,
+            text,
+        )
+        painter.restore()
+
+    def _thumbnail_rect(self, item_rect, pixmap):
+        pixel_ratio_reader = getattr(
+            pixmap,
+            "devicePixelRatio",
+            None,
+        )
+        try:
+            pixel_ratio = (
+                float(pixel_ratio_reader())
+                if callable(pixel_ratio_reader)
+                else 1.0
+            )
+        except Exception:
+            pixel_ratio = 1.0
+        pixel_ratio = max(1.0, pixel_ratio)
+        source_width = max(1.0, pixmap.width() / pixel_ratio)
+        source_height = max(1.0, pixmap.height() / pixel_ratio)
+        scale = min(
+            self.icon_size.width() / source_width,
+            self.icon_size.height() / source_height,
+        )
+        width = max(1, int(round(source_width * scale)))
+        height = max(1, int(round(source_height * scale)))
+        left = item_rect.x() + (item_rect.width() - width) // 2
+        top = (
+            item_rect.y()
+            + 4
+            + (self.icon_size.height() - height) // 2
+        )
+        return QRect(left, top, width, height)
 
 
 class LazyAssetLibraryWidget(QWidget):
@@ -379,6 +544,25 @@ class AssetLibraryWidget(QWidget):
         self._thumbnail_batch = None
         self._resolution_cache = {}
         self._selected_record = None
+        self._houdini_asset_bridge = None
+        app_plugin = getattr(self.core, "appPlugin", None)
+        self._is_houdini = (
+            str(getattr(app_plugin, "pluginName", "")).lower()
+            == "houdini"
+        )
+        self._asset_library_host_key = (
+            "houdini" if self._is_houdini else "standalone"
+        )
+        self._thumbnail_size_key = get_asset_library_thumbnail_size(
+            self.core,
+            self._asset_library_host_key,
+        )
+        self._thumbnail_display_size = QSize(
+            THUMBNAIL_SIZE_BY_KEY.get(
+                self._thumbnail_size_key,
+                THUMBNAIL_SIZE_BY_KEY["medium"],
+            )
+        )
         self._build_ui()
         self._populate_tree()
 
@@ -455,6 +639,24 @@ class AssetLibraryWidget(QWidget):
         self.order_button.toggled.connect(self._on_order_changed)
         toolbar.addWidget(self.order_button)
 
+        self.thumbnail_size_label = QLabel("Size:", right)
+        toolbar.addWidget(self.thumbnail_size_label)
+        self.thumbnail_size_combo = QComboBox(right)
+        for label, key, _size in THUMBNAIL_SIZE_PRESETS:
+            self.thumbnail_size_combo.addItem(label, key)
+        size_index = self.thumbnail_size_combo.findData(
+            self._thumbnail_size_key
+        )
+        self.thumbnail_size_combo.setCurrentIndex(max(0, size_index))
+        self.thumbnail_size_combo.setToolTip(
+            "Change the thumbnail display size. Existing _thumbs caches "
+            "are reused and are not regenerated."
+        )
+        self.thumbnail_size_combo.currentIndexChanged.connect(
+            self._on_thumbnail_size_changed
+        )
+        toolbar.addWidget(self.thumbnail_size_combo)
+
         self.generate_thumbnails_button = QPushButton(
             "Generate Thumbnails",
             right,
@@ -492,9 +694,14 @@ class AssetLibraryWidget(QWidget):
         self.asset_view.setSelectionMode(
             QAbstractItemView.SingleSelection
         )
-        self.asset_view.setIconSize(THUMBNAIL_SIZE)
-        self.asset_view.setGridSize(QSize(276, 194))
-        self.asset_view.setSpacing(6)
+        if self._is_houdini:
+            self.asset_view.setItemDelegate(
+                HoudiniAssetItemDelegate(
+                    self._thumbnail_display_size,
+                    self.asset_view,
+                )
+            )
+        self._apply_thumbnail_size()
         self.asset_view.setVerticalScrollMode(
             QAbstractItemView.ScrollPerPixel
         )
@@ -517,7 +724,19 @@ class AssetLibraryWidget(QWidget):
         right_layout.addWidget(self.asset_view, 1)
 
         details = QGroupBox("Details", right)
-        detail_layout = QFormLayout(details)
+        detail_outer_layout = QHBoxLayout(details)
+        self.detail_preview = QLabel(details)
+        self.detail_preview.setFixedSize(DETAIL_PREVIEW_SIZE)
+        self.detail_preview.setAlignment(Qt.AlignCenter)
+        self.detail_preview.setFrameShape(QFrame.StyledPanel)
+        self.detail_preview.setFrameShadow(QFrame.Sunken)
+        detail_outer_layout.addWidget(
+            self.detail_preview,
+            0,
+            Qt.AlignTop,
+        )
+        detail_layout = QFormLayout()
+        detail_outer_layout.addLayout(detail_layout, 1)
         self.detail_name = QLabel("-", details)
         detail_layout.addRow("Name:", self.detail_name)
         self.detail_resolution = QLabel("-", details)
@@ -863,6 +1082,46 @@ class AssetLibraryWidget(QWidget):
         )
         self._refresh_asset_view()
 
+    def _on_thumbnail_size_changed(self, *_args):
+        size_key = self.thumbnail_size_combo.currentData() or "medium"
+        if size_key not in THUMBNAIL_SIZE_BY_KEY:
+            size_key = "medium"
+        self._thumbnail_size_key = size_key
+        self._thumbnail_display_size = QSize(
+            THUMBNAIL_SIZE_BY_KEY[size_key]
+        )
+        self._apply_thumbnail_size()
+        save_asset_library_thumbnail_size(
+            self.core,
+            self._asset_library_host_key,
+            size_key,
+        )
+
+    def _apply_thumbnail_size(self):
+        size = self._thumbnail_display_size
+        self.asset_view.setIconSize(size)
+        if self._is_houdini:
+            grid_size = QSize(
+                size.width() + 8,
+                size.height() + 62,
+            )
+            spacing = 2
+            delegate = self.asset_view.itemDelegate()
+            if isinstance(delegate, HoudiniAssetItemDelegate):
+                delegate.set_icon_size(size)
+        else:
+            grid_size = QSize(
+                size.width() + 20,
+                size.height() + 66,
+            )
+            spacing = 6
+        self.asset_view.setGridSize(grid_size)
+        self.asset_view.setSpacing(spacing)
+        self._update_thumbnail_icon_metrics()
+        self.asset_view.doItemsLayout()
+        if hasattr(self, "_thumbnail_timer"):
+            self._schedule_visible_thumbnails()
+
     def _selected_directory_assets(self):
         item = self.source_tree.currentItem()
         if item is None:
@@ -1022,10 +1281,32 @@ class AssetLibraryWidget(QWidget):
             watched is self.asset_view.viewport()
             and event.type() in (QEvent.Resize, QEvent.Show)
         ):
+            self._update_thumbnail_icon_metrics()
             self._schedule_visible_thumbnails()
         return super(AssetLibraryWidget, self).eventFilter(
             watched,
             event,
+        )
+
+    def _update_thumbnail_icon_metrics(self):
+        ratio_reader = getattr(
+            self.asset_view,
+            "devicePixelRatioF",
+            None,
+        )
+        if not callable(ratio_reader):
+            ratio_reader = getattr(
+                self.asset_view,
+                "devicePixelRatio",
+                None,
+            )
+        try:
+            ratio = ratio_reader() if callable(ratio_reader) else 1.0
+        except Exception:
+            ratio = 1.0
+        self.asset_model.set_icon_metrics(
+            self._thumbnail_display_size,
+            ratio,
         )
 
     def _schedule_visible_thumbnails(self, *_args):
@@ -1170,6 +1451,11 @@ class AssetLibraryWidget(QWidget):
                 )
             )
         self._update_selected_resolution()
+        if (
+            service.source_key(result.get("path", ""))
+            == service.source_key(self._selected_path())
+        ):
+            self._update_detail_preview()
 
     def _on_thumbnail_finished(self, thread):
         self._thumbnail_threads.discard(thread)
@@ -1225,6 +1511,7 @@ class AssetLibraryWidget(QWidget):
         self.reveal_button.setEnabled(enabled)
         self.copy_button.setEnabled(bool(path))
         self._update_selected_resolution()
+        self._update_detail_preview()
 
     def _selected_path(self):
         return self.location_combo.currentData() or ""
@@ -1240,6 +1527,61 @@ class AssetLibraryWidget(QWidget):
         else:
             self.detail_resolution.setText("-")
 
+    def _update_detail_preview(self):
+        path = self._selected_path()
+        cache_path = service.thumbnail_path(path) if path else ""
+        if not path or not service.thumbnail_is_fresh(path, cache_path):
+            self._set_detail_preview_placeholder()
+            return
+        image = QImage(cache_path)
+        if image.isNull():
+            self._set_detail_preview_placeholder()
+            return
+        ratio_reader = getattr(
+            self.detail_preview,
+            "devicePixelRatioF",
+            None,
+        )
+        if not callable(ratio_reader):
+            ratio_reader = getattr(
+                self.detail_preview,
+                "devicePixelRatio",
+                None,
+            )
+        try:
+            ratio = float(
+                ratio_reader() if callable(ratio_reader) else 1.0
+            )
+        except (TypeError, ValueError):
+            ratio = 1.0
+        ratio = max(1.0, ratio)
+        target_size = QSize(
+            max(1, int(round(self.detail_preview.width() * ratio))),
+            max(1, int(round(self.detail_preview.height() * ratio))),
+        )
+        display_image = image.scaled(
+            target_size,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        pixmap = QPixmap.fromImage(display_image)
+        if pixmap.isNull():
+            self._set_detail_preview_placeholder()
+            return
+        set_device_pixel_ratio = getattr(
+            pixmap,
+            "setDevicePixelRatio",
+            None,
+        )
+        if callable(set_device_pixel_ratio):
+            set_device_pixel_ratio(ratio)
+        self.detail_preview.setText("")
+        self.detail_preview.setPixmap(pixmap)
+
+    def _set_detail_preview_placeholder(self):
+        self.detail_preview.clear()
+        self.detail_preview.setText("No cached preview")
+
     def _clear_details(self):
         self._selected_record = None
         self.detail_name.setText("-")
@@ -1254,6 +1596,7 @@ class AssetLibraryWidget(QWidget):
         self.open_button.setEnabled(False)
         self.reveal_button.setEnabled(False)
         self.copy_button.setEnabled(False)
+        self._set_detail_preview_placeholder()
 
     def _show_asset_context_menu(self, position):
         index = self.asset_view.indexAt(position)
@@ -1264,7 +1607,45 @@ class AssetLibraryWidget(QWidget):
         menu.addAction("Open", self.open_selected)
         menu.addAction("Reveal in Explorer", self.reveal_selected)
         menu.addAction("Copy Path", self.copy_selected_path)
+        self._add_houdini_asset_action(menu, self._selected_path())
         menu.exec_(self.asset_view.viewport().mapToGlobal(position))
+
+    def _add_houdini_asset_action(self, menu, path):
+        bridge = self._get_houdini_asset_bridge()
+        descriptor = bridge.describe_action(path)
+        if descriptor is None:
+            return None
+        target = descriptor.get("target")
+        menu.addSeparator()
+        return menu.addAction(
+            descriptor["label"],
+            lambda checked=False, selected_path=path, selected_target=target: (
+                self._create_houdini_environment_light(
+                    selected_path,
+                    selected_target,
+                )
+            ),
+        )
+
+    def _get_houdini_asset_bridge(self):
+        if self._houdini_asset_bridge is None:
+            self._houdini_asset_bridge = HoudiniAssetBridge(self.core)
+        return self._houdini_asset_bridge
+
+    def _create_houdini_environment_light(self, path, target):
+        bridge = self._get_houdini_asset_bridge()
+        if target is None:
+            self._show_warning(
+                "The current Houdini context cannot contain an "
+                "environment light. Open /obj or enter a LOP network "
+                "such as /stage, then try again."
+            )
+            return
+
+        target_path = target.get("network_path")
+        result = bridge.create_environment_light(path, target_path)
+        if not result.get("success"):
+            self._show_warning(result.get("message", "Creation failed."))
 
     def open_selected(self):
         path = self._selected_path()

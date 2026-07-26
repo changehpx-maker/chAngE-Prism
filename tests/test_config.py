@@ -124,6 +124,44 @@ class ConfigTests(unittest.TestCase):
                 ),
             )
 
+    def test_asset_library_thumbnail_sizes_are_saved_per_host(self):
+        core = _Core(
+            {
+                config.CONFIG_SECTION: {
+                    "asset_library": {
+                        "sources": [{"path": "D:/library", "enabled": True}],
+                        "thumbnail_sizes": {
+                            "houdini": "large",
+                            "standalone": "invalid",
+                        },
+                    }
+                }
+            }
+        )
+        self.assertEqual(
+            config.get_asset_library_thumbnail_size(core, "houdini"),
+            "large",
+        )
+        self.assertEqual(
+            config.get_asset_library_thumbnail_size(core, "standalone"),
+            "medium",
+        )
+
+        config.save_asset_library_thumbnail_size(
+            core,
+            "standalone",
+            "small",
+        )
+        library = core.data[config.CONFIG_SECTION]["asset_library"]
+        self.assertEqual(
+            library["thumbnail_sizes"],
+            {"houdini": "large", "standalone": "small"},
+        )
+        self.assertEqual(
+            library["sources"],
+            [{"path": "D:/library", "enabled": True}],
+        )
+
     def test_ocio_override_updates_mapping_without_losing_other_projects(self):
         core = _Core(
             {
