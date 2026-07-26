@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -105,6 +106,14 @@ if QApplication:
 
 @unittest.skipUnless(QApplication, "Requires Prism Qt runtime")
 class ArchiveBrowserUiTests(unittest.TestCase):
+    @staticmethod
+    def _wait_for(app, predicate, timeout=10):
+        deadline = time.time() + timeout
+        while not predicate() and time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        return predicate()
+
     def test_archive_rows_are_grouped_by_task_not_department(self):
         groups = ArchiveBrowserWidget._group_archive_versions(
             [
@@ -248,9 +257,12 @@ class ArchiveBrowserUiTests(unittest.TestCase):
                         widget.getSelectedContext(),
                         previous_entities.entity,
                     )
-                    self.assertEqual(
-                        widget.status_label.text(),
-                        os.path.join(tmp, "Archives"),
+                    self.assertTrue(
+                        self._wait_for(
+                            app,
+                            lambda: widget.status_label.text()
+                            == os.path.join(tmp, "Archives"),
+                        )
                     )
 
                     widget.refreshUI()
@@ -382,6 +394,13 @@ class ArchiveBrowserUiTests(unittest.TestCase):
                 widget = ArchiveBrowserWidget(core)
                 try:
                     widget.refresh_versions()
+                    self.assertTrue(
+                        self._wait_for(
+                            app,
+                            lambda: widget.table.rowCount() == 2,
+                        ),
+                        widget.status_label.text(),
+                    )
                     self.assertEqual(widget.table.columnCount(), 10)
                     self.assertEqual(widget.table.rowCount(), 2)
                     self.assertEqual(
@@ -444,7 +463,25 @@ class ArchiveBrowserUiTests(unittest.TestCase):
                     widget.table.selectRow(0)
                     core.confirmation_result = "Delete Archive"
                     widget.table.cellWidget(0, 9).click()
-                    self.assertFalse(version.exists())
+                    self.assertTrue(
+                        self._wait_for(
+                            app,
+                            lambda: (
+                                not version.exists()
+                                and widget.table.isEnabled()
+                            ),
+                        )
+                    )
+                    self.assertTrue(
+                        self._wait_for(
+                            app,
+                            lambda: (
+                                widget.table.rowCount() == 2
+                                and widget.table.cellWidget(0, 0)
+                                is not None
+                            ),
+                        )
+                    )
                     self.assertEqual(widget.table.rowCount(), 2)
                     self.assertEqual(
                         widget.table.cellWidget(0, 0).currentText(),

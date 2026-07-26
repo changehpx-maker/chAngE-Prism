@@ -1,251 +1,133 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+本文件只记录编码代理必须遵守的项目约束。功能操作、产品行为和验收细节放在对应功能文档中，避免这里与实现重复或过期。
 
-## 项目概述
+## 项目与兼容边界
 
-chAngE_Prism — Prism 制作流程扩展插件。当前包含服务器镜头批量导入、ACES/OCIO 审片转换、Nuke/Houdini Archive 打包和 Daily Review Copy。插件版本为 `v2.2.0`，Windows Prism 2.1.2/2.1.3 是正式验证环境；Nuke Archive 纯核心额外兼容 Nuke 13.2 / Python 3.7，Houdini Archive 支持 Houdini 20.5+。
+`chAngE_Prism` 是 Prism 2 制作流程扩展，正式环境为 Windows Prism 2.1.2/2.1.3。
+
+- Nuke Archive 纯核心兼容 Nuke 13.2 / Python 3.7。
+- Houdini Archive 支持 Houdini 20.5+。
+- Qt 代码同时考虑 Qt5/PySide2 与 Qt6/PySide6。
+- 插件版本的唯一代码来源是 `Scripts/Prism_chAngE_Prism_Variables.py`，不要在本文件维护版本号。
 
 ## 架构
 
-Prism 必需入口保持在 `Scripts/` 根层，业务按 feature 隔离：
+Prism 必需入口位于 `Scripts/` 根层，业务位于 `Scripts/change_prism/`：
 
-```
-Scripts/
-  Prism_chAngE_Prism_init.py          # 入口，多继承 Variables + Functions
-  Prism_chAngE_Prism_Variables.py     # 元数据：版本、平台、serverRoot 配置
-  Prism_chAngE_Prism_Functions.py     # 薄门面：注册 Prism 回调并转发到 controller
-  change_prism/
-    archive_core.py                   # 多 DCC Archive 版本、健康检查、安全删除和扫描
-    archive_browser/
-      controller.py                   # 统一 Archives 页签注册和刷新
-      dialog.py                       # Nuke/Houdini Archive Browser
-    config.py                         # 插件共享配置；config.json 仍位于插件根目录
-    batch_import/
-      controller.py                   # Prism 项目/镜头/media 与右键菜单编排
-      scanner.py                      # 纯逻辑：扫描服务器目录树
-      dialog.py                       # Batch Import QDialog
-    nuke_archive/
-      controller.py                   # Scenefiles 右键和后台任务编排
-      service.py                      # Python 3.7 纯核心：解析、复制、版本、健康状态和删除
-      dialog.py                       # 预检、进度和 Archive Browser Qt 界面
-      cli.py                          # 不依赖 Prism 的命令行入口
-    houdini_archive/
-      controller.py                   # Scenefiles 右键、Prism 环境和后台任务
-      service.py                      # 预检计划、复制、事务和 manifest
-      runner.py                       # HIP 版本、hython 选择和 Worker 子进程
-      houdini_worker.py               # 唯一允许导入 hou 的模块
-      dialog.py                       # Prism 后台 Worker、结果回调和 CLI 预检界面
-      cli.py                          # 依赖 hython、不依赖 Prism 的命令行入口
-    ocio/
-      controller.py                   # 完整窗口和 Media 右键快速转换编排
-      service.py                      # 纯逻辑：EXR、OCIO、FFmpeg 和输出路径
-      dialog.py                       # ACES/OCIO QDialog 与 QProcess 队列
-    review_copy/
-      controller.py                   # Project Browser / Media 右键编排
-      service.py                      # 当日目录创建、文件/目录复制和失败收集
+```text
+Prism_chAngE_Prism_init.py
+Prism_chAngE_Prism_Variables.py
+Prism_chAngE_Prism_Functions.py
+change_prism/
+  config.py
+  dcc_paths.py
+  archive_core.py
+  <feature>/
+    controller.py
+    service.py
+    dialog.py
+    cli.py          # 仅需要独立命令行时存在
 ```
 
-**数据流**：UI 采集输入 → scanner 扫描服务器 → 创建/打开 Prism 项目 → 创建/更新镜头（含部门 + 预设场景 + media 版本化导入）。
+功能路由：
 
-**ACES 转换数据流**：EXR 单帧/序列 → `oiiotool --ociodisplay` 烘焙 Display/View → MOV 使用临时 10-bit DPX，MP4-only 使用临时 8-bit 无压缩 TIFF → FFmpeg 编码 MP4/ProRes → 首帧解码验证 → Prism 原生转换输出路径。
+| 功能 | 代码目录 | 详细文档 |
+|---|---|---|
+| Batch Import / PDG | `change_prism/batch_import/` | [Batch Import.md](Batch%20Import.md) |
+| Asset Library | `change_prism/asset_library/` | [Asset Library.md](Asset%20Library.md) |
+| ACES / OCIO | `change_prism/ocio/` | [ACES转换器.md](ACES转换器.md) |
+| Nuke Archive | `change_prism/nuke_archive/` | [Nuke Archive.md](Nuke%20Archive.md) |
+| Houdini Archive | `change_prism/houdini_archive/` | [Houdini Archive.md](Houdini%20Archive.md) |
+| Archive Browser | `change_prism/archive_browser/` | Nuke/Houdini Archive 文档 |
+| Daily Review Copy | `change_prism/review_copy/` | [README.md](README.md) |
+| Prism Settings | `change_prism/settings/` | [README.md](README.md) |
 
-**Nuke Archive 数据流**：`.nk` 文本预检 → 标准 Read 路径解析和去重 → 文件数/容量/磁盘空间统计 → 用户确认 → Qt 后台线程复制 → 生成相对路径归档 Nuke 和 manifest → Archive 页签健康检查与版本详情。
+## 强制架构约定
 
-**Houdini Archive 数据流**：读取 HIP 保存版本 → 选择兼容 hython → 单次 Worker 加载源 HIP、收集依赖、内存改写并 Save As → 写入 `Incomplete` manifest 后退出 → 普通 Python 按 manifest 后台分块复制 → 文件大小验证并提交 schema 2 manifest → 结果弹窗 → 统一 Archives 页签。
+- `Prism_chAngE_Prism_Functions.py` 必须保持为薄回调门面，只注册 callback、创建顶层菜单并转发 controller。
+- 新功能按 `controller.py + service.py + dialog.py` 拆分；纯逻辑不得依赖 Qt 或 Prism。
+- feature 之间不直接导入彼此。共享配置、DCC 路径和 Archive 基础设施放在 `change_prism/` 根层。
+- controller 必须懒加载 dialog、重型库和可选子进程模块，避免拖慢 Prism 启动。
+- 长时间扫描、缩略图、媒体转换、DCC 启动和大文件复制不得阻塞 GUI 线程。
+- 每个 feature 有独立单元测试；需要真实 Nuke/Houdini 的流程放在 smoke/integration test。
 
-**Daily Review Copy 数据流**：Project Browser 文件或 Media 选择 → 去重 → 创建 `<destination_root>/YYYY-MM-DD/` → 文件覆盖或目录合并 → 汇总失败。
+## Prism API 易错规则
 
-## 关键约定
+- Prism context 必须以 `entity.copy()` 为基础，把 `sequence`、`shot` 等字段展开到顶层；不得嵌套为 `{"entity": entity}`。
+- media 版本化使用 `identifierType="playblasts"`，context 同时包含 `mediaType="playblasts"`。
+- `_increment_version` 遇到空值或非法版本时回退到 `lowestVersion + 1`。
+- `createSceneFromPreset` 在不同 Prism 版本中签名不同；`comment` 参数需有 `TypeError` 回退。
+- `createDepartment` / `createCategory` 的“已存在”异常可以消音，其他异常不要无条件吞掉。
+- `onProjectBrowserStartup` 可能多次触发；菜单和页签注册必须防重复。
+- 批量操作逐项收集路径和异常，结束后统一报告，不因单项失败丢失其余结果。
+- Qt 跨线程信号使用准确类型；不确定结果形状时用 `Signal(object)`。`QPixmap` 只能在 GUI 线程创建。
 
-### 功能模块边界
-- `Prism_chAngE_Prism_Functions.py` 只保留 Prism callback、顶层菜单和 controller 转发，不放业务实现
-- 新功能放在 `Scripts/change_prism/<feature>/`；Prism 集成写 `controller.py`，纯逻辑写 `service.py` 或明确命名模块，Qt 界面写 `dialog.py`
-- feature 之间不直接引用彼此；共享配置和未来公共基础设施放在 `change_prism/` 根层
-- controller 懒加载 dialog，避免未使用功能增加 Prism 启动时间
-- 每个 feature 在 `tests/` 中有独立测试文件；跨工具真实流程另写 integration test
+## 配置约定
 
-### Prism 插件加载
-- 插件目录必须在 Prism 的 `PRISM_PLUGIN_PATHS` 环境变量中
-- Prism 通过 `Prism_<Name>_init.py` 发现插件，调用 `isActive()` 决定是否加载
-- 回调通过 `self.core.callbacks.registerCallback(name, method, plugin=self)` 注册
+- 工作站路径统一保存到 `Prism Settings > User > chAngE_Prism`，通过 Prism `getConfig`/`setConfig` 和 `userSettings_*` callback 持久化。
+- 不读取或写入插件根目录 `config.json`，也不要把用户机器绝对路径硬编码进运行时代码。
+- 当前项目 OCIO 的内部 key 使用规范化项目路径；UI 显示保留 Prism 原始路径大小写。
+- Batch Import 的 Hython 从 Prism Houdini executable override 推导，`topcook.py` 从同一安装目录查找；不保存 `hython_path` 或 `topcook_path`。
+- PDG 通过环境显式传入 `SHOT_BUILDER_PDG_JSON` 和 `HOUDINI_PACKAGE_DIR`，不要求系统 `PIPELINE_ROOT`。
+- Asset Library sources 是 Prism 用户全局配置，不写入项目配置。
 
-### 服务器目录结构
-```
+## Batch Import 不变量
+
+- 服务器路径为：
+
+```text
 {server_root}/{project}/publish/shot/{episode}/{sequence}/{shot}/{step_category}/{step_code}/
 ```
-- step 映射：`shot_motion/shot_animation` → Animation, `shot_solution/cloth_solution` → Cloth, `shot_solution/hair_solution` → Hair（在 `_SERVER_STEPS` 和 `STEP_LABELS` 中定义，预拆分为元组避免重复 split）
-- efx 相关内容全部跳过
-- 预拆分 `_SERVER_STEPS` 为 `[("shot_motion", "shot_animation"), ...]`，避免循环内重复 `split("/")`
 
-### 镜头部门结构
-- 每个镜头创建 3 个部门：**FX** (Effects, .hip/Houdini), **Lighting** (Lighting, .hip/Houdini), **Compositing** (Compositing, .nk/Nuke)
-- 新镜头：`_ensure_departments(entity)` 创建部门 + category + 预设场景
-- 已有镜头：只更新 frame range + metadata，不重建部门/预设（对齐 shot_builder_batch `_try_update_shot` 模式）
-- 预设场景通过 `_get_preset_scenes()` 获取，结果缓存在 `self._preset_scenes_cache` 中，整个批次只调一次
-- 批量导入时 `getShots(sequence)` 结果按 sequence 缓存在 `shots_cache` 字典中，同 sequence 的镜头只查一次
+- `SERVER_STEPS` 固定映射 Animation、Cloth、Hair；`_list_dirs` 有 `lru_cache`，每次 search 前必须调用 `clear_list_dirs_cache()`。
+- Prism `sequence` = 服务器 `episode`；Prism `shot` = `<server_sequence>_<server_shot>`。
+- metadata 使用 `chAngE_server_project`、`chAngE_server_scene`、`chAngE_server_shot`。
+- 同 sequence 的 `getShots()` 结果按批次缓存；新建镜头后同步更新缓存。
+- Review MOV 通过 Prism media API 导入；同名文件必须避免覆盖。
+- PDG 模块保持懒加载，只在用户启用且存在成功 FBX 数据时启动一次后台 Hython。
 
-### 文件处理
-- `.mov` → 通过 `mediaProducts.createIdentifier("review")` + `createVersion()` 创建版本化 media
-- 版本号：`getHighestMediaVersion(ctx, getExisting=True)` 获取当前最高版本，`_next_media_version` 通过磁盘检查决定是否递增
-- context 构造：必须用 `entity.copy()` 展开 entity 字段到顶层，不能嵌套在 `{"entity": entity}` 下。Prism 模板解析是扁平 key 查找（`"sequence" in context`），嵌套会导致 `@sequence@` 等变量无法解析
-- `_increment_version` 防御空值：`ValueError/TypeError` 时 fallback 到 `lowestVersion + 1`
-- 其余文件不拷贝不记录路径
-- shot entity metadata 存 `chAngE_server_project`、`chAngE_server_scene`、`chAngE_server_shot`（服务器侧项目/场景/镜头名），用于右键菜单直接构造服务器路径
+其余扫描格式、三种导入模式、`published_ref` 和 PDG JSON 结构以 [Batch Import.md](Batch%20Import.md) 为准。
 
-### 右键菜单
-- `openPBShotContextMenu` 添加 "Open Server Folder" 子菜单，含 Animation / Cloth Solution / Hair Solution / Shot Root
-- `_open_server_subdir` 从 shot metadata 读 `chAngE_server_project`，直接构造服务器路径，通过 `QDesktopServices.openUrl` 打开
-- QMenu 防重复：`onProjectBrowserStartup` 用 `self._chAngE_menu_action` 存储引用，重复触发时先移除旧的再添加
+## Archive 不变量
 
-### 层级映射
+- `archive_core.py`、Archive Browser 和 Nuke Archive 核心保持 Python 3.7 / Qt5 兼容。
+- Nuke `service.py`/CLI 只用 Python 3.7 标准库，不导入 Prism、Qt 或 Nuke；禁止 `list[str]`、`Path.is_relative_to()`、`copytree(dirs_exist_ok=...)` 和结构化模式匹配。
+- `hou` 只能在 `houdini_archive/houdini_worker.py` 中导入；依赖扫描、路径改写和 Save As 在单次 Hython Worker 中完成。
+- 原始 DCC 场景永远不修改。新 Archive 使用事务目录，失败或取消时只清理本次新版本。
+- Archive 版本仅按 Task 独立递增；Department 只作为元数据。必须继续读取旧 Archive 布局和旧 manifest。
+- Archive 刷新只做快速存在性检查，不逐帧读素材或计算校验和。
+- Archive 删除是永久操作，必须同时验证 Archives 根、版本父目录、`v####`、规范化路径、真实路径和 `.incomplete` 状态。
 
-服务器 3 级（episode/sequence/shot）映射到 Prism 2 级（sequence/shot）：
+## Asset Library 与媒体不变量
 
-- Prism `sequence` = 服务器 `episode`（如 `Q2EP007`）
-- Prism `shot` = 服务器 `sequence` + `_` + `shot`（如 `SC01_shot001`）
-
-### Filter 输入格式
-- `PV001/SC01/shot021` — 完整路径（episode/sequence/shot）
-- `SC01/shot021` — 省略 episode（自动区分 ep/seq 还是 seq/shot）
-- `shot021` — 仅镜头号
-- 支持逗号、换行分隔多行输入
-
-### Frame range
-- 从服务器 `shot_animation/xml/description.xml` 解析 `<attribute name="sequence_frame">` 和 `<attribute name="render_start_frame">`
-- 不可解析时 fallback 到 `[1001, 1100]`
-- 通过 `createEntity(frameRange=[start, end])` 写入 Prism
-
-## 配置
-
-| 配置 | 用途 |
-|---|---|
-| `config.json/server_root` | 服务器根目录；为空时 Windows 默认 `P:\`，其他平台默认测试路径 |
-| `config.json/local_projects_root` | 本地 Prism 项目根目录；Batch Import 中手动编辑或浏览选择目录都会立即保存 |
-| `config.json/review_copy.destination_root` | Daily Review Copy 根目录；实际目标为 `<root>/YYYY-MM-DD/` |
-| `config.json/ocio_converter.project_overrides` | 按 Prism 项目保存的手动 OCIO config 覆盖 |
-| `OCIO` | 没有项目手动覆盖时使用的 OCIO config |
-| `PRISM_MEDIA_CONVERSION_OUTPUT_MODE` | ACES 转换输出规则：`same_folder`、`version_suffix` 或 `next_version` |
-
-## ACES / OCIO Media Converter
-
-- 入口：Project Browser 的 `chAngE > ACES / OCIO Media Converter...` 打开完整窗口；Media 预览右键 `ACES / OCIO Quick Convert` 直接启动隐藏队列
-- 首版输入限定 RGB EXR 单帧/序列；缺帧或缺 RGB 通道时预检失败
-- OCIO 优先级：项目手动覆盖 → `OCIO` 环境变量 → `ocio://default`（界面显示警告）
-- 默认 Input 为 `ACEScg`，Display 优先 `Rec.1886 Rec.709`，View 优先 ACES SDR
-- MP4：H.264/CRF 18/yuv420p；MOV：ProRes 422 HQ/yuv422p10le，UI 默认 `prores_aw` Fast 并可切换 `prores_ks` Compatibility；均写 BT.709 标签
-- OCIO inventory 在窗口显示后加载并按 config/tool 缓存，避免阻塞窗口启动
-- 不调用、不复制付费 Media Extension 的代码、二进制、配置或资源
-- 完整使用说明见 [ACES转换器.md](ACES转换器.md)
-
-## Nuke Archive
-
-- 入口：镜头 Scenefiles 下 `.nk` 右键 `Package Nuke Archive...`；Project Browser 的 `Archives` 页签浏览版本
-- 纯核心和 CLI 仅使用 Python 3.7 标准库，不导入 Prism、Qt、Nuke 或参考工具
-- 只解析标准 `Read {}`；支持绝对/相对、引号/大括号、环境变量和 `%04d` / `%d` / `####`
-- 图片序列复制整个目录并按规范化源目录去重；MOV/单图只复制文件并按规范化源文件去重；同名不同源追加 `_2` / `_3`
-- 归档副本的 Read 使用 `../sequences/...`；Root `project_directory` 使用 Nuke 13 保存格式
-- 预检统计文件数、素材容量和目标磁盘空间；空间不足时禁用确认并在执行前再次阻止
-- manifest 记录 Read 映射、复制统计、创建信息和源 Nuke 指纹
-- Nuke/Houdini manifest 记录源场景的 Department 和 Task；旧 manifest 从 `Scenefiles/<department>/<task>` 推导
-- 健康状态优先级：`Incomplete` → `Invalid Manifest` → `Missing Files` → `Source Changed` → `Complete`
-- `Open Nuke` 必须走 `core.openFile()`，沿用 Prism 的 Nuke executable override、启动模式和环境
-- 新版本写入 `Archives/<task>/v####`，仅按 Task 独立递增，Department 不参与编号；旧 `Archives/v####` 和 `Archives/<department>/<task>/v####` 继续兼容
-- 删除按钮永久删除选中的 `v####`；必须二次确认，服务层校验版本父目录、版本名、真实路径和 `.incomplete`
-- 完整说明见 [Nuke Archive.md](Nuke%20Archive.md)
-
-## Houdini Archive
-
-- 入口：镜头 Scenefiles 下 `.hip/.hiplc/.hipnc` 右键 `Package Houdini Archive...`；与 Nuke 共用 `Archives` 页签，版本仅按 Task 独立递增
-- `houdini_worker.py` 是唯一允许导入 `hou` 的模块；service/CLI 不导入 Prism 或 Qt，运行扫描和 Save As 必须有 Houdini 20.5+ hython
-- HIP 版本选择：完全相同 build 优先；只允许同 major/minor 且不低于源 build 的最低版本回退
-- 支持 ABC、FBX、非 File Cache VDB、OBJ/GEO/PLY/STL、纹理/HDRI、LUT、音频和序列；序列仅复制匹配模式文件
-- File Cache 内部引用和所有 `.bgeo/.bgeo.sc` 固定跳过；USD/Solaris 与 PDG/TOP 动态依赖首版跳过
-- 外部 HDA/OTL 仅复制并标记手动激活，不修改 `HOUDINI_OTLSCAN_PATH`
-- 新 Archive HIP 直接位于 `Archives/<task>/v####` 根目录，仅重写 `Package Input` 为 `$HIP/dependencies/...`；旧 `hip/` 子目录结构继续兼容
-- 统一 Archives 表按 Application、Task 分组，Department 保留为当前版本信息，Version 下拉框默认选择该 Task 的最高版本
-- Archives 页签外壳在 Project Browser 启动时创建，Prism EntityWidget 和版本 UI 在首次进入页签时懒加载
-- Prism 右键打包无预检/进度窗口；同一源场景禁止重复提交，完成或失败后弹窗
-- Prism 流程只启动一次 hython；Worker 写出归档 HIP 和 `Incomplete` manifest 后退出，普通 Python 再按 manifest 复制依赖
-- 源文件在 Worker 执行期间发生变化、复制或大小验证失败时清理本次新版本
-- 健康状态优先级：`Incomplete` → `Invalid Manifest` → `Missing Files` → `Source Changed` → `Complete with Exclusions` → `Complete`
-- 完整说明见 [Houdini Archive.md](Houdini%20Archive.md)
-
-## Daily Review Copy
-
-- 入口：Project Browser 文件右键或 Media 预览右键 `Copy to Daily Review Folder`
-- Media 为序列时复制整个序列目录；单文件只复制文件
-- 同名文件覆盖；同名目录合并并覆盖冲突文件，不删除目标额外内容
-- 批量失败收集源路径和异常，结束时统一 popup
-
-## 测试扫描器
-
-扫描器是纯 Python 模块，可独立运行：
-
-```bash
-python3 -c "
-from change_prism.batch_import.scanner import scan_server_shots
-results = scan_server_shots('/Users/change_mac/Desktop/test', ['Q2EP007'], project_code='zhanshen')
-for r in results:
-    print(r['episode'], r['sequence'], r['shot'], [s['label'] for s in r['steps']])
-"
-```
+- Asset Library 完整 UI 和扫描器首次进入页签后再加载。
+- 扫描不得跟随链接目录，必须排除 `_thumbs`；后台结果使用 generation 校验，过期结果不能覆盖新配置。
+- 缩略图只由用户手动触发；后台总并发最多 4 个，其中 HDR/EXR 最多 2 个；浏览和刷新只读取缓存。
+- Remove Source 只改配置，不删除素材或 `_thumbs`。
+- ACES/OCIO 转换不得调用、复制或依赖付费 Media Extension 的代码、二进制和资源。
+- Daily Review 目录复制采用合并覆盖，不删除目标中额外内容。
 
 ## 测试
 
-```powershell
-python -m unittest discover -s tests -v
-$env:PRISM_TEST_ROOT = "D:\pipeline\Prism\Prism_v2.1.3"
-python -m unittest tests.test_ocio_integration -v
-```
-
-Nuke 13 可选 headless 验证：
+通用单元测试：
 
 ```powershell
-& "C:\Program Files\Nuke13.2v1\Nuke13.2.exe" --safe -t tests\nuke13_archive_smoke.py
+python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Houdini HOM 验证：
+Qt 测试应在 Prism 自带 Python/PySide 环境运行。真实 DCC 验证入口：
 
-```powershell
-& "C:\Program Files\Side Effects Software\Houdini 20.5.684\bin\hython.exe" tests\houdini_archive_smoke.py
-& "C:\Program Files\Side Effects Software\Houdini 21.0.631\bin\hython.exe" tests\houdini_archive_smoke.py
-& "C:\Program Files\Side Effects Software\Houdini 22.0.368\bin\hython.exe" tests\houdini_archive_smoke.py
-```
+- Nuke 13：`tests/nuke13_archive_smoke.py`
+- Houdini：`tests/houdini_archive_smoke.py`
+- OCIO bundled tools：`tests/test_ocio_integration.py`
 
-headless/HOM 测试需要对应 DCC 许可证。最近一次 Prism PySide6 环境完整扫描共发现 85 项测试：通过 79 项、跳过 6 项环境测试；Houdini 20.5.684、21.0.631、22.0.368 的 HOM 冒烟测试此前均已通过。
+不要在本文记录“当前通过多少项”或具体安装 build；测试结果和本机路径会过期。
 
-## Prism API 参考
+## 参考
 
-当前 Windows 验证环境的 Prism 源码位于 `D:\pipeline\Prism\Prism_v2.1.3\Scripts`；仓库内 `./prism_docs/` 是官方文档镜像。关键模块：
-
-| 模块 | 用途 |
-|---|---|
-| `PrismCore.py` | 核心单例：`core.popup()`, `core.openFolder()`, `core.projectBrowser()` |
-| `PrismUtils/ProjectEntities.py` | `createEntity()`, `createDepartment()`, `createCategory()`, `getShots()`, `getMetaData()`, `setMetaData()`, `createSceneFromPreset()`, `getPresetScenes()`, `setShotRange()` |
-| `PrismUtils/MediaProducts.py` | `createIdentifier()`, `createVersion()`, `getHighestMediaVersion()` — media 版本化 |
-| `PrismUtils/Projects.py` | `createProject(name, path, preset)`, `changeProject(configPath)` |
-| `PrismUtils/PathManager.py` | `getEntityPath()`, `generateScenePath()` |
-| `PrismUtils/Callbacks.py` | `registerCallback()` / `callback()` |
-| `PrismUtils/PluginManager.py` | `getPlugin()` - 已加载插件实例 |
-
-`./prism_docs/` 下有 81 个官方文档，`./prism环境变量.md` 有环境变量速查表。
-
-## 已知注意事项
-
-- Qt 信号类型必须精确匹配，`Signal(list)` 不接受 `dict`。用 `Signal(object)` 或直接传回调函数
-- `core.projects.createProject()` 对已存在项目会自动被 `changeProject` 替代，不拦截
-- 插件通过 `openPBShotContextMenu` 回调添加右键菜单，签名是 `(origin: EntityPage, rcmenu: QMenu, index: QModelIndex)`
-- `onProjectBrowserStartup` 回调签名为 `(origin: ProjectBrowser)`。此回调可能多次触发（切换项目等），需防重复添加 widget
-- `createDepartment` / `createCategory` 对已存在的会抛异常，用 `try/except: pass` 消音是预期行为
-- `getHighestMediaVersion(getExisting=True)` 返回当前最高版本，需手动 +1 得到新版本号；必须传 `mediaType` 键到 context，否则走 `renderVersions` 模板找不到 playblast 版本
-- context 传给 `getResolvedProjectStructurePath` 时必须用 `entity.copy()` 展开 entity 字段到顶层，嵌套在 `"entity"` 下会导致模板变量无法解析
-- `createSceneFromPreset` 签名因 Prism 版本不同可能不接受 `comment` 参数，需 try/except TypeError 回退
-- scanner 中的 `seen` 用于跨 filter 去重，用 `set` 而非 `dict`（key 是 `(project_code, episode, sequence, shot)` 元组）
-- scanner 的 `_list_dirs` 有 `@lru_cache`，每次 search 前需调 `clear_list_dirs_cache()` 清除缓存，避免读到旧数据
-- 批量导入失败时收集 shot 路径 + 异常信息，结束时在 popup 展示
-- Nuke Archive 的 service/CLI 必须维持 Python 3.7：不可使用 `list[str]`、`Path.is_relative_to`、`copytree(dirs_exist_ok=...)` 或结构化模式匹配
-- `archive_core.py` 和统一 Archive Browser 需要保持 Python 3.7/Qt5 兼容，不能为了 Houdini 新版本破坏 Nuke 13 环境
-- Houdini 依赖扫描和场景修改必须隔离在单次 hython Worker；Prism UI 只提交后台任务并在结束时显示结果
-- Archive 健康检查保持快速存在性检查，不在页签刷新时逐帧读取内容或计算校验和；旧 manifest 的容量只在选中版本时临时计算
-- Archive 删除是永久操作，目标必须同时通过其版本父目录、`v####`、规范化路径、真实路径和 `.incomplete` 检查
+- [README.md](README.md)：用户入口、配置和功能总览
+- [开发需求.md](开发需求.md)：需求范围与实现状态
+- [prism环境变量.md](prism环境变量.md)：环境变量速查
+- `prism_docs/`：仓库内 Prism 官方文档镜像
+- `tests/`：当前行为和兼容性约束的可执行说明

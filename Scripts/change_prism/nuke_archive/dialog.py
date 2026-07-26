@@ -29,12 +29,78 @@ from qtpy.QtWidgets import (
 
 from change_prism.nuke_archive.service import (
     PackageCancelled,
+    build_package_plan,
     calculate_archive_payload_stats,
     delete_archive_version,
     execute_package,
     format_bytes,
     scan_archive_versions,
 )
+
+
+class PreflightWorker(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, source_nk, archive_root):
+        super(PreflightWorker, self).__init__()
+        self.source_nk = source_nk
+        self.archive_root = archive_root
+
+    @Slot()
+    def run(self):
+        try:
+            plan = build_package_plan(
+                self.source_nk,
+                self.archive_root,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.finished.emit(plan)
+
+
+class PreflightUiBridge(QObject):
+    def __init__(
+        self,
+        dialog,
+        on_finished,
+        on_failed,
+        on_thread_finished,
+    ):
+        super(PreflightUiBridge, self).__init__(dialog)
+        self._on_finished = on_finished
+        self._on_failed = on_failed
+        self._on_thread_finished = on_thread_finished
+
+    @Slot(object)
+    def preflight_finished(self, plan):
+        self._on_finished(plan)
+
+    @Slot(str)
+    def preflight_failed(self, message):
+        self._on_failed(message)
+
+    @Slot()
+    def thread_finished(self):
+        self._on_thread_finished()
+
+
+def create_preflight_dialog(parent=None):
+    dialog = QProgressDialog(
+        "Scanning Nuke dependencies...",
+        "",
+        0,
+        0,
+        parent,
+    )
+    dialog.setWindowTitle("Package Nuke Archive")
+    dialog.setWindowModality(Qt.WindowModal)
+    dialog.setCancelButton(None)
+    dialog.setMinimumDuration(0)
+    dialog.setAutoClose(False)
+    dialog.setAutoReset(False)
+    return dialog
 
 
 class PackageConfirmDialog(QDialog):

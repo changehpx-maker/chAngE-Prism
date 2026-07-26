@@ -2,6 +2,17 @@
 
 Prism 官方文档：`prism_docs/general_environmentVariables.md`
 
+chAngE_Prism 的服务器、本地项目、Daily Review、Batch Import PDG 和当前项目 OCIO 路径
+不再使用插件根目录 `config.json`，请在
+`Prism Settings > User > chAngE_Prism` 中设置。`PRISM_USER_PREFS`
+仍可用于改变 Prism 用户配置文件本身的位置。
+
+Batch Import 的 Hython 不使用 `hython_path` 环境变量或插件 JSON：它由
+Prism `Settings > User > Apps > Houdini` 的 executable override 自动推导。
+`topcook.py` 同样从该 Houdini 安装目录寻找。PDG 运行时由插件临时设置
+`SHOT_BUILDER_PDG_JSON` 和 `HOUDINI_PACKAGE_DIR`，不要求用户设置
+`PIPELINE_ROOT`。
+
 **路径/目录**
 
 | 变量 | 默认值 | 说明 |
@@ -87,5 +98,3 @@ Prism 官方文档：`prism_docs/general_environmentVariables.md`
 | `PRISM_EPISODE` | 当前剧集名称 |
 | `PRISM_USERNAME` | 用户名（可通过 `PRISM_USERNAME` 覆盖） |
 | `PRISM_USER_ABBREVIATION` | 用户缩写（可通过 `PRISM_USER_ABBREVIATION` 覆盖） |
-
-

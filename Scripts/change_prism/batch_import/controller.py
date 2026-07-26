@@ -1,14 +1,21 @@
 import os
-import shutil
 
-from qtpy.QtCore import Qt, QUrl
+from qtpy.QtCore import QTimer, Qt, QUrl
 from qtpy.QtGui import QDesktopServices
 from qtpy.QtWidgets import QAction, QMenu
 
+from change_prism.batch_import.file_processor import FileProcessor
+from change_prism.batch_import.scanner import SERVER_STEPS, STEP_LABELS
+from change_prism.batch_import.service import write_failure_report
 
-class BatchImportController:
+
+class BatchImportController(object):
     DEPARTMENTS = {
-        "FX": {"name": "Effects", "ext": ".hip", "software": "Houdini"},
+        "FX": {
+            "name": "Effects",
+            "ext": ".hip",
+            "software": "Houdini",
+        },
         "Lighting": {
             "name": "Lighting",
             "ext": ".hip",
@@ -30,19 +37,294 @@ class BatchImportController:
     def __init__(self, core, plugin):
         self.core = core
         self.plugin = plugin
+        self.file_processor = FileProcessor(core)
         self._preset_scenes_cache = None
+        self._pdg_processor = None
+        self._import_state = None
+        self._file_job = None
 
     def open_dialog(self):
         from change_prism.batch_import.dialog import BatchImportDialog
+        from change_prism.config import get_server_root
 
-        parent = self.core.pb if getattr(self.core, "pb", None) else None
+        parent = getattr(self.core, "pb", None)
+        self.plugin.serverRoot = get_server_root(self.core)
         dialog = BatchImportDialog(
             self.core,
             self.plugin.serverRoot,
-            create_callback=self._create_project_and_shots,
+            create_callback=self._start_project_and_shots,
+            finish_callback=self._on_batch_import_finished,
             parent=parent,
         )
         dialog.exec_()
+
+    def _start_project_and_shots(self, data):
+        finished_callback = data.get("_finished_callback")
+        reporter = data.get("_reporter") or _NullReporter()
+        if not callable(finished_callback):
+            raise RuntimeError(
+                "Batch import requires a completion callback."
+            )
+        if self._import_state is not None:
+            raise RuntimeError("A Batch Import is already running.")
+
+        project_name = data["project_name"]
+        project_path = data["project_path"]
+        selected = list(data["selected"])
+        project_loaded = False
+        try:
+            config_path = os.path.join(
+                project_path,
+                "00_Pipeline",
+                "project_config.json",
+            )
+            if os.path.exists(config_path):
+                reporter.set_status(
+                    "Opening existing project '%s'..." % project_name
+                )
+                self.core.projects.changeProject(config_path)
+                project_loaded = True
+            else:
+                reporter.set_status(
+                    "Creating Prism project '%s'..." % project_name
+                )
+                config_path = self.core.projects.createProject(
+                    name=project_name,
+                    path=project_path,
+                    preset="Default",
+                    parent=data.get("parent"),
+                )
+                if not config_path:
+                    finished_callback(
+                        self._build_import_result(
+                            0,
+                            len(selected),
+                            [],
+                            {
+                                "project": project_name,
+                                "total": len(selected),
+                            },
+                            [],
+                        )
+                    )
+                    return None
+                reporter.set_status(
+                    "Loading project '%s'..." % project_name
+                )
+                self.core.projects.changeProject(config_path)
+                project_loaded = True
+                self._set_project_departments()
+        except Exception as exc:
+            finished_callback(
+                self._build_import_result(
+                    0,
+                    len(selected),
+                    [],
+                    {
+                        "project": project_name,
+                        "total": len(selected),
+                    },
+                    [],
+                    project_loaded=project_loaded,
+                    error=str(exc),
+                )
+            )
+            return None
+
+        self._import_state = {
+            "data": data,
+            "reporter": reporter,
+            "finished_callback": finished_callback,
+            "project_name": project_name,
+            "selected": selected,
+            "project_loaded": project_loaded,
+            "create_only": bool(data.get("create_only")),
+            "copy_to_local": bool(data.get("copy_to_local")),
+            "pdg_enabled": bool(data.get("pdg_enabled")),
+            "index": 0,
+            "success": 0,
+            "failures": [],
+            "shot_data_list": [],
+            "shots_cache": {},
+            "current": None,
+        }
+        QTimer.singleShot(0, self._advance_async_import)
+        return None
+
+    def _advance_async_import(self):
+        state = self._import_state
+        if state is None:
+            return
+        if state["index"] >= len(state["selected"]):
+            self._finish_async_import()
+            return
+
+        item = state["selected"][state["index"]]
+        state["index"] += 1
+        state["reporter"].update_progress(state["index"])
+        state["current"] = {"item": item}
+        try:
+            entity = self._create_single_shot(
+                item,
+                state["project_name"],
+                state["shots_cache"],
+            )
+            if state["create_only"]:
+                self._complete_async_shot()
+                return
+            prepared = self.file_processor.prepare(
+                item,
+                entity,
+                state["project_name"],
+                state["copy_to_local"],
+            )
+            state["current"].update(
+                {"entity": entity, "prepared": prepared}
+            )
+            self._start_file_work("product", prepared)
+        except Exception as exc:
+            self._fail_async_shot(str(exc))
+
+    def _start_file_work(self, mode, payload):
+        from qtpy.QtCore import QThread
+        from change_prism.batch_import.dialog import (
+            BatchFileUiBridge,
+            BatchFileWorker,
+        )
+
+        state = self._import_state
+        parent = state["data"].get("parent") if state else None
+        thread = QThread(parent)
+        worker = BatchFileWorker(self.file_processor, mode, payload)
+        worker.moveToThread(thread)
+        job = {
+            "thread": thread,
+            "worker": worker,
+            "mode": mode,
+        }
+        bridge = BatchFileUiBridge(
+            parent,
+            on_finished=lambda result: self._file_work_finished(
+                job,
+                result,
+            ),
+            on_failed=lambda message: self._file_work_failed(
+                job,
+                message,
+            ),
+            on_thread_finished=lambda: self._cleanup_file_job(job),
+        )
+        job["bridge"] = bridge
+        self._file_job = job
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(bridge.work_finished)
+        worker.failed.connect(bridge.work_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(bridge.thread_finished)
+        thread.start()
+
+    def _file_work_finished(self, job, result):
+        state = self._import_state
+        if state is None:
+            return
+        try:
+            if job["mode"] == "product":
+                current = state["current"]
+                current["shot_data"] = result
+                self.file_processor.finalize_product(
+                    current["prepared"],
+                    result,
+                )
+                copies = self.file_processor.prepare_review_copies(
+                    current["entity"],
+                    result,
+                )
+                if copies:
+                    self._start_file_work("review", copies)
+                    return
+            self._complete_async_shot()
+        except Exception as exc:
+            self._fail_async_shot(str(exc))
+
+    def _file_work_failed(self, job, message):
+        del job
+        self._fail_async_shot(message)
+
+    def _cleanup_file_job(self, job):
+        if self._file_job is job:
+            self._file_job = None
+        job["thread"].deleteLater()
+        job["bridge"].deleteLater()
+
+    def _complete_async_shot(self):
+        state = self._import_state
+        if state is None:
+            return
+        current = state["current"] or {}
+        shot_data = current.get("shot_data")
+        if shot_data is not None:
+            state["shot_data_list"].append(shot_data)
+        state["success"] += 1
+        state["current"] = None
+        QTimer.singleShot(0, self._advance_async_import)
+
+    def _fail_async_shot(self, message):
+        state = self._import_state
+        if state is None:
+            return
+        item = (state.get("current") or {}).get("item", {})
+        state["failures"].append(
+            {
+                "episode": item.get("episode", ""),
+                "sequence": item.get("sequence", ""),
+                "shot": item.get("shot", ""),
+                "server_dir": item.get("server_dir", ""),
+                "error": str(message),
+            }
+        )
+        state["current"] = None
+        QTimer.singleShot(0, self._advance_async_import)
+
+    def _finish_async_import(self):
+        state = self._import_state
+        if state is None:
+            return
+        self._import_state = None
+        failures = state["failures"]
+        try:
+            failure_report = write_failure_report(
+                self.core,
+                state["project_name"],
+                failures,
+            )
+        except OSError:
+            failure_report = ""
+        summary = {
+            "project": state["project_name"],
+            "total": len(state["selected"]),
+            "create_only": state["create_only"],
+            "copy_to_local": state["copy_to_local"],
+            "pdg_enabled": (
+                state["pdg_enabled"]
+                and not state["create_only"]
+                and bool(state["shot_data_list"])
+            ),
+            "failure_report": failure_report,
+        }
+        state["finished_callback"](
+            self._build_import_result(
+                state["success"],
+                len(failures),
+                failures,
+                summary,
+                state["shot_data_list"],
+                project_loaded=state["project_loaded"],
+            )
+        )
 
     def add_shot_context_menu(self, origin, menu, _index):
         tree = getattr(origin, "tw_tree", None)
@@ -54,102 +336,243 @@ class BatchImportController:
 
         submenu = QMenu("Open Server Folder", menu)
         menu.addMenu(submenu)
-        for label, subdir in (
-            ("Animation", "shot_motion/shot_animation"),
-            ("Cloth Solution", "shot_solution/cloth_solution"),
-            ("Hair Solution", "shot_solution/hair_solution"),
-            ("Shot Root", ""),
-        ):
+        entries = [
+            (
+                STEP_LABELS.get("%s/%s" % pair, pair[1]),
+                "%s/%s" % pair,
+            )
+            for pair in SERVER_STEPS
+        ]
+        entries.append(("Shot Root", ""))
+        for label, subdir in entries:
             action = QAction(label, submenu)
             action.triggered.connect(
-                lambda checked=False, path=subdir: self._open_server_subdir(
-                    selected, path
+                lambda checked=False, path=subdir: (
+                    self._open_server_subdir(selected, path)
                 )
             )
             submenu.addAction(action)
 
-    def _create_project_and_shots(self, data):
-        dialog = data["dlg"]
+    def _create_project_and_shots(self, data, reporter=None):
         project_name = data["project_name"]
         project_path = data["project_path"]
         selected = data["selected"]
+        parent = data.get("parent")
+        create_only = bool(data.get("create_only"))
+        copy_to_local = bool(data.get("copy_to_local"))
+        pdg_enabled = bool(data.get("pdg_enabled"))
+        reporter = reporter or _NullReporter()
+        project_loaded = False
+        shot_data_list = []
 
         try:
             config_path = os.path.join(
                 project_path, "00_Pipeline", "project_config.json"
             )
             if os.path.exists(config_path):
-                dialog.set_status("Opening existing project '%s'..." % project_name)
+                reporter.set_status(
+                    "Opening existing project '%s'..." % project_name
+                )
                 self.core.projects.changeProject(config_path)
+                project_loaded = True
             else:
-                dialog.set_status("Creating Prism project '%s'..." % project_name)
+                reporter.set_status(
+                    "Creating Prism project '%s'..." % project_name
+                )
                 config_path = self.core.projects.createProject(
                     name=project_name,
                     path=project_path,
                     preset="Default",
-                    parent=dialog,
+                    parent=parent,
                 )
                 if not config_path:
-                    dialog.on_create_finished(0, len(selected))
-                    return
-
-                dialog.set_status("Loading project '%s'..." % project_name)
+                    return self._build_import_result(
+                        0,
+                        len(selected),
+                        [],
+                        {
+                            "project": project_name,
+                            "total": len(selected),
+                        },
+                        [],
+                    )
+                reporter.set_status(
+                    "Loading project '%s'..." % project_name
+                )
                 self.core.projects.changeProject(config_path)
+                project_loaded = True
+                self._set_project_departments()
 
             success = 0
-            failed = 0
             failures = []
             shots_cache = {}
             for index, item in enumerate(selected):
-                dialog.update_progress(index + 1)
+                reporter.update_progress(index + 1)
                 try:
-                    self._create_single_shot(item, project_name, shots_cache)
+                    entity = self._create_single_shot(
+                        item, project_name, shots_cache
+                    )
+                    if not create_only:
+                        shot_data_list.append(
+                            self.file_processor.process(
+                                item,
+                                entity,
+                                project_name,
+                                copy_to_local,
+                            )
+                        )
                     success += 1
                 except Exception as exc:
-                    failed += 1
                     failures.append(
-                        "%s/%s/%s: %s"
-                        % (
-                            item.get("episode", ""),
-                            item.get("sequence", ""),
-                            item.get("shot", ""),
-                            str(exc),
-                        )
+                        {
+                            "episode": item.get("episode", ""),
+                            "sequence": item.get("sequence", ""),
+                            "shot": item.get("shot", ""),
+                            "server_dir": item.get("server_dir", ""),
+                            "error": str(exc),
+                        }
                     )
 
+            try:
+                failure_report = write_failure_report(
+                    self.core, project_name, failures
+                )
+            except OSError:
+                failure_report = ""
+            summary = {
+                "project": project_name,
+                "total": len(selected),
+                "create_only": create_only,
+                "copy_to_local": copy_to_local,
+                "pdg_enabled": (
+                    pdg_enabled
+                    and not create_only
+                    and bool(shot_data_list)
+                ),
+                "failure_report": failure_report,
+            }
+            return self._build_import_result(
+                success,
+                len(failures),
+                failures,
+                summary,
+                shot_data_list,
+                project_loaded=project_loaded,
+            )
+        except Exception as exc:
+            return self._build_import_result(
+                0,
+                len(selected),
+                [],
+                {
+                    "project": project_name,
+                    "total": len(selected),
+                },
+                shot_data_list,
+                project_loaded=project_loaded,
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _build_import_result(
+        success,
+        fail,
+        failures,
+        summary,
+        shot_data_list,
+        project_loaded=False,
+        error="",
+    ):
+        return {
+            "success": success,
+            "fail": fail,
+            "failures": failures,
+            "summary": summary,
+            "shot_data_list": shot_data_list,
+            "project_loaded": project_loaded,
+            "error": error,
+        }
+
+    def _on_batch_import_finished(self, dialog, result):
+        result = result or {}
+        if result.get("error"):
+            self.core.popup(
+                "Error during project creation:\n\n%s"
+                % result["error"],
+                severity="error",
+                parent=dialog,
+            )
+
+        summary = result.get("summary", {})
+        shot_data_list = result.get("shot_data_list", [])
+        if summary.get("pdg_enabled") and shot_data_list:
+            from change_prism.batch_import.pdg import PDGProcessor
+
+            dialog.set_status("Launching PDG FBX Convert...")
+            self._pdg_processor = PDGProcessor(self.core)
+            self._pdg_processor.run(
+                shot_data_list, summary.get("project", "")
+            )
+
+        if result.get("project_loaded"):
             dialog.set_status("Opening Project Browser...")
-            if not self.core.pb:
+            if not getattr(self.core, "pb", None):
                 self.core.projectBrowser()
             else:
                 self.core.pb.show()
                 self.core.pb.refreshUI()
-            dialog.on_create_finished(success, failed, failures)
-        except Exception as exc:
-            self.core.popup(
-                "Error during project creation:\n\n%s" % str(exc),
-                severity="error",
-                parent=dialog,
-            )
-            dialog.on_create_finished(0, len(selected))
 
-    def _create_single_shot(self, item, project_name=None, shots_cache=None):
+        dialog.on_create_finished(
+            result.get("success", 0),
+            result.get("fail", 0),
+            result.get("failures", []),
+            summary,
+        )
+
+    def _set_project_departments(self):
+        setter = getattr(self.core.projects, "setDepartments", None)
+        if not callable(setter):
+            return
+        departments = [
+            {
+                "name": info["name"],
+                "abbreviation": code,
+                "defaultTasks": [info["name"]],
+            }
+            for code, info in self.DEPARTMENTS.items()
+        ]
+        setter("shot", departments)
+
+    def _create_single_shot(
+        self, item, project_name=None, shots_cache=None
+    ):
         entity = {
             "type": "shot",
+            "episode": item["episode"],
             "sequence": item["episode"],
-            "shot": "%s_%s" % (item["sequence"], item["shot"]),
+            "shot": "%s_%s"
+            % (item["sequence"], item["shot"]),
         }
-
         sequence = entity["sequence"]
         if shots_cache is not None:
             if sequence not in shots_cache:
-                shots_cache[sequence] = self.core.entities.getShots(
-                    sequence=sequence
+                shots_cache[sequence] = list(
+                    self.core.entities.getShots(
+                        sequence=sequence
+                    )
+                    or []
                 )
             existing = shots_cache[sequence]
         else:
-            existing = self.core.entities.getShots(sequence=sequence)
+            existing = self.core.entities.getShots(
+                sequence=sequence
+            )
         found = next(
-            (shot for shot in existing if shot.get("shot") == entity["shot"]),
+            (
+                shot
+                for shot in existing
+                if shot.get("shot") == entity["shot"]
+            ),
             None,
         )
 
@@ -157,7 +580,9 @@ class BatchImportController:
         metadata = {
             "chAngE_server_project": {
                 "show": True,
-                "value": project_name or item.get("project_code", ""),
+                "value": (
+                    project_name or item.get("project_code", "")
+                ),
             },
             "chAngE_server_scene": {
                 "show": False,
@@ -170,25 +595,26 @@ class BatchImportController:
         }
 
         if not found:
-            self.core.entities.createEntity(
+            created = self.core.entities.createEntity(
                 entity,
                 frameRange=frame_range,
                 silent=True,
                 metaData=metadata,
             )
+            if isinstance(created, dict):
+                entity = created.get("entity", entity)
             self._ensure_departments(entity)
-        else:
-            entity = found
-            self.core.entities.setShotRange(
-                entity, frame_range[0], frame_range[1]
-            )
-            self.core.entities.setMetaData(entity=entity, metaData=metadata)
+            if shots_cache is not None:
+                existing.append(entity)
+            return entity
 
-        mov_paths = []
-        for step in item.get("steps", []):
-            mov_paths.extend(step.get("files", {}).get("mov_files", []))
-        if mov_paths:
-            self._ingest_mov_as_media(entity, mov_paths)
+        self.core.entities.setShotRange(
+            found, frame_range[0], frame_range[1]
+        )
+        self.core.entities.setMetaData(
+            entity=found, metaData=metadata
+        )
+        return found
 
     def _ensure_departments(self, entity):
         presets = self._get_preset_scenes()
@@ -242,11 +668,15 @@ class BatchImportController:
     def _create_scene_from_preset(
         self, entity, preset, department, task
     ):
-        create = getattr(self.core.entities, "createSceneFromPreset", None)
+        create = getattr(
+            self.core.entities, "createSceneFromPreset", None
+        )
         if not callable(create):
             return None
         preset_path = str(preset.get("path") or "")
-        comment = str(preset.get("label") or "") or "chAngE_Prism"
+        comment = (
+            str(preset.get("label") or "") or "chAngE_Prism"
+        )
         try:
             return create(
                 entity,
@@ -263,91 +693,43 @@ class BatchImportController:
             return None
 
     def _ingest_mov_as_media(self, entity, mov_paths):
-        identifier = "review"
-        self.core.mediaProducts.createIdentifier(
-            entity,
-            identifier,
-            identifierType="playblasts",
-            location="global",
+        return self.file_processor.import_media_files(
+            entity, mov_paths
         )
-
-        context = entity.copy()
-        context["identifier"] = identifier
-        context["identifierType"] = "playblasts"
-        context["mediaType"] = "playblasts"
-        current = self.core.mediaProducts.getHighestMediaVersion(
-            context, getExisting=True
-        )
-        version = self._next_media_version(
-            entity, identifier, "playblasts", current
-        )
-        version_path = self.core.mediaProducts.createVersion(
-            entity,
-            identifier,
-            version,
-            identifierType="playblasts",
-            location="global",
-        )
-        if not version_path:
-            return
-
-        os.makedirs(str(version_path), exist_ok=True)
-        for source in mov_paths:
-            shutil.copy2(
-                source,
-                os.path.join(str(version_path), os.path.basename(source)),
-            )
 
     def _next_media_version(
         self, entity, identifier, media_type, current_version
     ):
-        try:
-            base = self.core.paths.getRenderProductBasePaths()["global"]
-            context = entity.copy()
-            context["identifier"] = identifier
-            context["mediaType"] = media_type
-            context["version"] = current_version
-            context["task"] = "none"
-            context["user"] = self.core.user
-            context["project_path"] = base
-            key = (
-                "playblastVersions"
-                if media_type == "playblasts"
-                else "renderVersions"
-            )
-            existing = self.core.projects.getResolvedProjectStructurePath(
-                key, context
-            )
-            if existing and os.path.exists(str(existing)):
-                return self._increment_version(current_version)
-            return current_version
-        except Exception:
-            return self._increment_version(current_version)
+        return self.file_processor._next_media_version(
+            entity, identifier, media_type, current_version
+        )
 
     def _increment_version(self, version):
-        version_format = getattr(self.core, "versionFormat", "v%04d")
-        try:
-            number = int(str(version).lstrip("vV")) + 1
-        except (ValueError, TypeError):
-            number = self.core.lowestVersion + 1
-        return version_format % number
+        return self.file_processor._increment_version(version)
 
     def _open_server_subdir(self, selected_items, subdir):
+        from change_prism.config import get_server_root
+
+        self.plugin.serverRoot = get_server_root(self.core)
         opened = 0
         for item in selected_items:
             shot_data = (
-                item.data(0, Qt.UserRole) if hasattr(item, "data") else None
+                item.data(0, Qt.UserRole)
+                if hasattr(item, "data")
+                else None
             )
             if not shot_data:
                 continue
             sequence = (shot_data.get("sequence") or "").strip()
-            if not sequence:
-                continue
             metadata = self._read_metadata_from_item(shot_data)
+            project = metadata.get(
+                "chAngE_server_project", ""
+            )
             scene = metadata.get("chAngE_server_scene", "")
-            shot_name = metadata.get("chAngE_server_shot", "")
-            project = metadata.get("chAngE_server_project", "")
-            if not project or not scene or not shot_name:
+            shot_name = metadata.get(
+                "chAngE_server_shot", ""
+            )
+            if not all((sequence, project, scene, shot_name)):
                 continue
             path = os.path.join(
                 self.plugin.serverRoot,
@@ -360,10 +742,11 @@ class BatchImportController:
                 subdir,
             )
             if os.path.exists(path):
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+                QDesktopServices.openUrl(
+                    QUrl.fromLocalFile(path)
+                )
                 opened += 1
-
-        if opened == 0:
+        if not opened:
             self.core.popup(
                 "Server folder not found for the selected shots.",
                 severity="warning",
@@ -374,8 +757,17 @@ class BatchImportController:
         raw = self.core.entities.getMetaData(shot_data)
         for key in self.SERVER_META_KEYS:
             value = raw.get(key, {})
-            if isinstance(value, dict):
-                metadata[key] = value.get("value", "")
-            else:
-                metadata[key] = str(value) if value else ""
+            metadata[key] = (
+                value.get("value", "")
+                if isinstance(value, dict)
+                else str(value or "")
+            )
         return metadata
+
+
+class _NullReporter(object):
+    def set_status(self, _text):
+        pass
+
+    def update_progress(self, _value):
+        pass

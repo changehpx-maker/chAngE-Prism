@@ -2,9 +2,8 @@ from __future__ import unicode_literals
 
 import os
 
+from change_prism import heavy_jobs
 from change_prism.nuke_archive.service import (
-    ArchiveError,
-    build_package_plan,
     find_shot_root,
 )
 
@@ -19,6 +18,7 @@ class NukeArchiveController:
         self.refresh_callback = refresh_callback
         self.browser_widget = None
         self._active_jobs = []
+        self._preflight_job = None
 
     def add_project_browser_tab(self, origin):
         tab_widget = getattr(origin, "tbw_project", None)
@@ -56,6 +56,16 @@ class NukeArchiveController:
         )
 
     def package_nuke(self, source_nk):
+        if (
+            self._preflight_job is not None
+            or self._active_jobs
+            or heavy_jobs.is_active("archive_package")
+        ):
+            self.core.popup(
+                "A Nuke Archive job is already running.",
+                severity="info",
+            )
+            return
         shot_root = find_shot_root(source_nk)
         if not shot_root:
             self.core.popup(
@@ -65,20 +75,76 @@ class NukeArchiveController:
             return
 
         archive_root = os.path.join(shot_root, "Archives")
-        try:
-            plan = build_package_plan(source_nk, archive_root)
-        except ArchiveError as exc:
-            self.core.popup(str(exc), severity="warning")
-            return
-
-        from qtpy.QtWidgets import QApplication, QDialog
-        from change_prism.nuke_archive.dialog import PackageConfirmDialog
+        from qtpy.QtWidgets import QApplication
 
         parent = getattr(self.core, "pb", None) or QApplication.activeWindow()
+        self._start_preflight(source_nk, archive_root, parent)
+
+    def _start_preflight(self, source_nk, archive_root, parent):
+        from qtpy.QtCore import QThread
+        from change_prism.nuke_archive.dialog import (
+            PreflightUiBridge,
+            PreflightWorker,
+            create_preflight_dialog,
+        )
+
+        progress_dialog = create_preflight_dialog(parent)
+        thread = QThread(parent)
+        worker = PreflightWorker(source_nk, archive_root)
+        worker.moveToThread(thread)
+        job = {
+            "thread": thread,
+            "worker": worker,
+            "dialog": progress_dialog,
+        }
+        bridge = PreflightUiBridge(
+            progress_dialog,
+            on_finished=lambda plan: self._preflight_finished(
+                job,
+                plan,
+                parent,
+            ),
+            on_failed=lambda message: self._preflight_failed(job, message),
+            on_thread_finished=lambda: self._cleanup_preflight(job),
+        )
+        job["bridge"] = bridge
+        self._preflight_job = job
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(bridge.preflight_finished)
+        worker.failed.connect(bridge.preflight_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(bridge.thread_finished)
+        progress_dialog.show()
+        thread.start()
+
+    def _preflight_finished(self, job, plan, parent):
+        job["dialog"].close()
+        if self._preflight_job is job:
+            self._preflight_job = None
+
+        from qtpy.QtWidgets import QDialog
+        from change_prism.nuke_archive.dialog import PackageConfirmDialog
+
         dialog = PackageConfirmDialog(plan, parent=parent)
         if dialog.exec_() != QDialog.Accepted:
             return
         self._start_package(plan, parent)
+
+    def _preflight_failed(self, job, message):
+        job["dialog"].close()
+        if self._preflight_job is job:
+            self._preflight_job = None
+        self.core.popup(message, severity="warning")
+
+    def _cleanup_preflight(self, job):
+        if self._preflight_job is job:
+            self._preflight_job = None
+        job["thread"].deleteLater()
+        job["bridge"].deleteLater()
 
     def _start_package(self, plan, parent):
         from qtpy.QtCore import QThread
@@ -88,14 +154,27 @@ class NukeArchiveController:
             create_progress_dialog,
         )
 
+        if (
+            self._active_jobs
+            or heavy_jobs.is_active("archive_package")
+        ):
+            self.core.popup(
+                "A Nuke Archive job is already running.",
+                severity="info",
+            )
+            return
+
         progress_dialog = create_progress_dialog(plan, parent=parent)
         thread = QThread(parent)
         worker = PackageWorker(plan)
         worker.moveToThread(thread)
+        token = object()
+        heavy_jobs.acquire("archive_package", token)
         job = {
             "thread": thread,
             "worker": worker,
             "dialog": progress_dialog,
+            "heavy_job_token": token,
         }
         bridge = PackageUiBridge(
             progress_dialog,
@@ -150,6 +229,10 @@ class NukeArchiveController:
         bridge = job["bridge"]
         if job in self._active_jobs:
             self._active_jobs.remove(job)
+        heavy_jobs.release(
+            "archive_package",
+            job.get("heavy_job_token"),
+        )
         thread.deleteLater()
         bridge.deleteLater()
 

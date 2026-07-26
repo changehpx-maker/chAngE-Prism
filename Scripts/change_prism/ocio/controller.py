@@ -46,6 +46,12 @@ class OCIOConvertController:
     def quick_convert(self, media_player, formats):
         from change_prism.ocio.dialog import OCIOConvertDialog
 
+        if self._quick_dialogs:
+            self.core.popup(
+                "An OCIO quick conversion is already running.",
+                severity="warning",
+            )
+            return
         paths, context = self._get_media_player_selection(media_player)
         if not paths:
             return

@@ -128,13 +128,17 @@ class ReviewCopyControllerTests(unittest.TestCase):
                 controller,
                 "get_review_copy_destination_root",
                 return_value="Z:/daily_review",
-            ), mock.patch.object(
-                controller, "copy_items", return_value=result
-            ) as copy:
+            ) as get_destination, mock.patch.object(
+                review_copy, "_start_copy_job"
+            ) as start_copy:
                 review_copy.add_file_context_menu(object(), menu, source)
                 menu.actions[0].trigger()
 
-            copy.assert_called_once_with([source], "Z:/daily_review")
+            start_copy.assert_called_once_with(
+                [source], "Z:/daily_review"
+            )
+            get_destination.assert_called_once_with(core)
+            review_copy._copy_finished(result)
             self.assertIn("Copied 1 item(s)", core.popups[0][0])
             self.assertEqual(core.popups[0][1]["severity"], "info")
 
@@ -149,12 +153,14 @@ class ReviewCopyControllerTests(unittest.TestCase):
                 controller,
                 "get_review_copy_destination_root",
                 return_value="",
-            ), mock.patch.object(controller, "copy_items") as copy:
+            ), mock.patch.object(
+                review_copy, "_start_copy_job"
+            ) as start_copy:
                 review_copy.copy_paths([source])
 
-            copy.assert_not_called()
+            start_copy.assert_not_called()
             self.assertIn(
-                "review_copy.destination_root",
+                "Prism Settings > User > chAngE_Prism",
                 core.popups[0][0],
             )
             self.assertEqual(core.popups[0][1]["severity"], "warning")

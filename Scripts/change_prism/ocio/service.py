@@ -1,4 +1,3 @@
-import json
 import os
 import re
 import shutil
@@ -156,29 +155,6 @@ def select_ocio_config(project_key, config_data=None, environ=None):
     if env_value:
         return env_value, "environment"
     return "ocio://default", "oiio_default"
-
-
-def project_config_key(core):
-    path = getattr(core, "projectPath", "") or ""
-    return os.path.normcase(os.path.normpath(path)) if path else "__no_project__"
-
-
-def save_project_override(config_path, project_key, ocio_path):
-    data = {}
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r", encoding="utf-8") as stream:
-                data = json.load(stream)
-        except (OSError, ValueError):
-            data = {}
-    converter_cfg = data.setdefault("ocio_converter", {})
-    overrides = converter_cfg.setdefault("project_overrides", {})
-    if ocio_path:
-        overrides[project_key] = ocio_path
-    else:
-        overrides.pop(project_key, None)
-    with open(config_path, "w", encoding="utf-8") as stream:
-        json.dump(data, stream, ensure_ascii=False, indent=2)
 
 
 def find_tools(core=None):
