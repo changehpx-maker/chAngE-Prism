@@ -70,7 +70,7 @@ change_prism/
 - 不读取或写入插件根目录 `config.json`，也不要把用户机器绝对路径硬编码进运行时代码。
 - 当前项目 OCIO 的内部 key 使用规范化项目路径；UI 显示保留 Prism 原始路径大小写。
 - Batch Import 的 Hython 从 Prism Houdini executable override 推导，`topcook.py` 从同一安装目录查找；不保存 `hython_path` 或 `topcook_path`。
-- PDG 为每次运行创建独立的 `%TEMP%\change_prism_pdg_<随机>\shot_data.json`，通过 `SHOT_BUILDER_PDG_JSON` 和 `HOUDINI_PACKAGE_DIR` 显式传入 Hython，并在进程结束后清理临时 JSON；不要求系统 `PIPELINE_ROOT`。
+- 运行诊断文件统一放在 `%TEMP%\chAngE_Prism\<feature>\logs|json\`。PDG 为每次运行创建独立的 `batch_import\pdg\json\change_prism_pdg_<随机>\shot_data.json`，通过 `SHOT_BUILDER_PDG_JSON` 和 `HOUDINI_PACKAGE_DIR` 显式传入 Hython，已启动的运行结束后保留 JSON；不要求系统 `PIPELINE_ROOT`。
 - Asset Library sources 是 Prism 用户全局配置，不写入项目配置。
 
 ## Batch Import 不变量
@@ -87,6 +87,7 @@ change_prism/
 - 同 sequence 的 `getShots()` 结果按批次缓存；新建镜头后同步更新缓存。
 - Review MOV 通过 Prism media API 导入；同名文件必须避免覆盖。
 - PDG 模块保持懒加载，只在用户启用且存在成功 FBX 数据时启动一次后台 Hython。
+- PDG JSON 只包含 FBX、帧范围和 Animation XML 的必要 metadata；不再传递 Cloth/Hair XML 或 elements。
 
 其余扫描格式、三种导入模式、`published_ref` 和 PDG JSON 结构以 [Batch Import.md](Batch%20Import.md) 为准。
 

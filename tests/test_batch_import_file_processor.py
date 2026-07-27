@@ -243,6 +243,20 @@ class FileProcessorTests(unittest.TestCase):
                 protected_destination.read_bytes(), b"existing"
             )
 
+            empty_version = root / "empty_review" / "v0001"
+            empty_version.mkdir(parents=True)
+            with self.assertRaises(FileNotFoundError):
+                processor.execute_review_copies(
+                    [
+                        (
+                            str(missing),
+                            str(empty_version / "review.mov"),
+                        )
+                    ],
+                    cleanup_directory=str(empty_version),
+                )
+            self.assertFalse(empty_version.exists())
+
     def test_xml_context_redacts_personal_fields(self):
         entry = FileProcessor._make_step_entry(
             {},

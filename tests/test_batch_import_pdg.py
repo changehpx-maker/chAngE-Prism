@@ -62,8 +62,23 @@ class PDGProcessorTests(unittest.TestCase):
                     "Animation": {
                         "fbx": ["D:/source/animation/fbx/camera.fbx"],
                         "review": ["D:/source/review.mov"],
+                        "xml": {
+                            "path": "D:/source/animation/xml/description.xml",
+                            "attributes": {
+                                "sequence_frame": 100,
+                                "average_translation": [1, 2, 3],
+                            },
+                        },
                     },
-                    "Cloth": {"abc": ["D:/source/cloth.abc"]},
+                    "Cloth": {
+                        "abc": ["D:/source/cloth.abc"],
+                        "xml": {
+                            "path": "D:/source/cloth.xml",
+                            "attributes": {
+                                "elements": ["cloth_body"],
+                            },
+                        },
+                    },
                 },
             }
         ]
@@ -72,17 +87,22 @@ class PDGProcessorTests(unittest.TestCase):
         shot = result["EP01/SC01/shot001"]
 
         self.assertEqual(len(shot["file_dict"]), 1)
-        self.assertTrue(
-            shot["file_dict"][0]["path"].endswith("camera.fbx")
-        )
         self.assertEqual(
-            shot["file_dict"][0]["relpath"],
-            "animation/fbx/camera.fbx",
+            shot["file_dict"],
+            [{"path": "D:/source/animation/fbx/camera.fbx"}],
         )
         self.assertEqual(shot["entity"]["shot"], "SC01_shot001")
         self.assertEqual(
             shot["frame_range"], {"start": 1001, "end": 1100}
         )
+        self.assertEqual(
+            shot["xml"],
+            {
+                "path": "D:/source/animation/xml/description.xml",
+                "attributes": {"sequence_frame": 100},
+            },
+        )
+        self.assertNotIn("cloth_solution", shot["xml"])
 
     def test_runtime_paths_come_from_prism_and_settings(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -129,41 +149,37 @@ class PDGProcessorTests(unittest.TestCase):
                 str(package_dir),
             )
 
-    def test_pdg_json_uses_isolated_temp_path_and_cleans_up(self):
+    def test_pdg_json_uses_unified_temp_hierarchy_and_explicit_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
-            first_dir = Path(directory) / "change_prism_pdg_first"
-            second_dir = Path(directory) / "change_prism_pdg_second"
-            first_dir.mkdir()
-            second_dir.mkdir()
             with mock.patch(
-                "change_prism.batch_import.pdg.tempfile.mkdtemp",
-                side_effect=[str(first_dir), str(second_dir)],
-            ), mock.patch(
-                "change_prism.batch_import.pdg.tempfile.gettempdir",
+                "change_prism.batch_import.service.tempfile.gettempdir",
                 return_value=directory,
             ):
                 processor = PDGProcessor(_Core())
                 first_path = processor._write_pdg_json({"run": 1})
                 second_path = processor._write_pdg_json({"run": 2})
+                first_dir = Path(first_path).parent
+                second_dir = Path(second_path).parent
                 processor._json_path = first_path
                 processor._cleanup_pdg_json()
 
-            self.assertEqual(
-                first_path, str(first_dir / "shot_data.json")
+            json_root = (
+                Path(directory)
+                / "chAngE_Prism"
+                / "batch_import"
+                / "pdg"
+                / "json"
             )
-            self.assertEqual(
-                second_path, str(second_dir / "shot_data.json")
-            )
+            self.assertEqual(first_dir.parent, json_root)
+            self.assertEqual(second_dir.parent, json_root)
+            self.assertTrue(first_dir.name.startswith("change_prism_pdg_"))
+            self.assertTrue(second_dir.name.startswith("change_prism_pdg_"))
             self.assertFalse(first_dir.exists())
             with open(second_path, "r", encoding="utf-8") as handle:
                 self.assertEqual(json.load(handle), {"run": 2})
 
-    def test_stderr_error_marks_run_failed_and_cleans_temp_json(self):
+    def test_finished_run_reports_failure_and_retains_temp_json(self):
         with tempfile.TemporaryDirectory() as directory:
-            temp_dir = Path(directory) / "change_prism_pdg_test"
-            temp_dir.mkdir()
-            json_path = temp_dir / "shot_data.json"
-            json_path.write_text("{}", encoding="utf-8")
             stderr_path = Path(directory) / "stderr.log"
             stderr_path.write_text(
                 "ERROR:test:work item generation failed\n",
@@ -171,12 +187,14 @@ class PDGProcessorTests(unittest.TestCase):
             )
             core = _Core()
             processor = PDGProcessor(core)
-            processor._json_path = str(json_path)
-
             with mock.patch(
-                "change_prism.batch_import.pdg.tempfile.gettempdir",
+                "change_prism.batch_import.service.tempfile.gettempdir",
                 return_value=directory,
             ):
+                json_path = Path(
+                    processor._write_pdg_json({"run": "failed"})
+                )
+                processor._json_path = str(json_path)
                 processor._on_pdg_finished(
                     123,
                     0,
@@ -187,7 +205,9 @@ class PDGProcessorTests(unittest.TestCase):
             self.assertIn(
                 "Detected error output", core.popups[-1][0]
             )
-            self.assertFalse(temp_dir.exists())
+            self.assertIn(str(json_path), core.popups[-1][0])
+            self.assertTrue(json_path.is_file())
+            self.assertEqual(processor._json_path, "")
 
     def test_houdini_environment_uses_settings_not_pipeline_root(self):
         with tempfile.TemporaryDirectory() as directory:

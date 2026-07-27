@@ -2,11 +2,40 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from change_prism.batch_import.service import prune_old_files
+from change_prism.batch_import.service import (
+    get_log_dir,
+    prune_old_files,
+    write_failure_report,
+)
 
 
 class BatchImportServiceTests(unittest.TestCase):
+    def test_diagnostics_use_plugin_feature_and_type_hierarchy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch(
+                "change_prism.batch_import.service.tempfile.gettempdir",
+                return_value=directory,
+            ):
+                log_dir = get_log_dir(None, "pdg")
+                report = write_failure_report(
+                    None,
+                    "show",
+                    [{"shot": "SC03_shot027", "error": "test"}],
+                )
+
+            root = Path(directory) / "chAngE_Prism" / "batch_import"
+            self.assertEqual(
+                Path(log_dir),
+                root / "pdg" / "logs",
+            )
+            self.assertEqual(
+                Path(report).parent,
+                root / "reports" / "json",
+            )
+            self.assertTrue(Path(report).is_file())
+
     def test_prune_old_files_keeps_newest_matches_only(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

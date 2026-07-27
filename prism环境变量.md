@@ -10,9 +10,10 @@ chAngE_Prism 的服务器、本地项目、Daily Review、Batch Import PDG 和�
 Batch Import 的 Hython 不使用 `hython_path` 环境变量或插件 JSON：它由
 Prism `Settings > User > Apps > Houdini` 的 executable override 自动推导。
 `topcook.py` 同样从该 Houdini 安装目录寻找。PDG 每次创建独立的
-`%TEMP%\change_prism_pdg_<随机>\shot_data.json`，并由插件临时设置
+`%TEMP%\chAngE_Prism\batch_import\pdg\json\change_prism_pdg_<随机>\shot_data.json`，
+并由插件临时设置
 指向该文件的 `SHOT_BUILDER_PDG_JSON` 和 `HOUDINI_PACKAGE_DIR`；
-Hython 结束后自动清理临时 JSON，不要求用户设置 `PIPELINE_ROOT`。
+已启动的 Hython 结束后保留该 JSON 方便诊断，不要求用户设置 `PIPELINE_ROOT`。
 
 **路径/目录**
 

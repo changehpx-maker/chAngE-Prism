@@ -5,23 +5,27 @@ import time
 
 
 MAX_FAILURE_REPORTS = 20
+PLUGIN_TEMP_DIR = "chAngE_Prism"
+BATCH_IMPORT_FEATURE = "batch_import"
 
 
-def get_user_data_dir(core):
-    user_ini = getattr(core, "userini", "") if core is not None else ""
-    if user_ini:
-        base = os.path.dirname(os.path.abspath(str(user_ini)))
-    else:
-        base = tempfile.gettempdir()
-    return os.path.join(base, "chAngE_Prism")
+def get_output_dir(feature, output_type):
+    parts = [
+        tempfile.gettempdir(),
+        PLUGIN_TEMP_DIR,
+        BATCH_IMPORT_FEATURE,
+    ]
+    if feature:
+        parts.append(feature)
+    parts.append(output_type)
+    path = os.path.join(*parts)
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def get_log_dir(core, category=None):
-    path = os.path.join(get_user_data_dir(core), "logs")
-    if category:
-        path = os.path.join(path, category)
-    os.makedirs(path, exist_ok=True)
-    return path
+    del core
+    return get_output_dir(category, "logs")
 
 
 def prune_old_files(directory, prefix="", suffix="", keep=20):
@@ -55,7 +59,7 @@ def write_failure_report(core, project_name, failures):
         for char in (project_name or "project")
     )
     path = os.path.join(
-        get_log_dir(core, "reports"),
+        get_output_dir("reports", "json"),
         "failure_report_%s_%s.json"
         % (safe_project, time.strftime("%Y%m%d_%H%M%S")),
     )

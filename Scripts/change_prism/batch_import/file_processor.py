@@ -42,7 +42,12 @@ class FileProcessor(object):
             review_copies = self.prepare_review_copies(
                 entity, shot_data
             )
-            self.execute_review_copies(review_copies)
+            self.execute_review_copies(
+                review_copies,
+                cleanup_directory=self._review_version_directory(
+                    review_copies
+                ),
+            )
             return shot_data
         except Exception as exc:
             cleanup_errors = []
@@ -332,7 +337,10 @@ class FileProcessor(object):
 
     def _import_media(self, entity, shot_data):
         copies = self.prepare_review_copies(entity, shot_data)
-        self.execute_review_copies(copies)
+        self.execute_review_copies(
+            copies,
+            cleanup_directory=self._review_version_directory(copies),
+        )
 
     def prepare_review_copies(self, entity, shot_data):
         media_files = []
@@ -386,7 +394,7 @@ class FileProcessor(object):
         return copies
 
     @staticmethod
-    def execute_review_copies(copies):
+    def execute_review_copies(copies, cleanup_directory=""):
         completed = []
         try:
             for source, destination in copies:
@@ -401,12 +409,27 @@ class FileProcessor(object):
                 shutil.copy2(source, destination)
                 completed.append((source, destination))
         except Exception:
-            FileProcessor.cleanup_review_copies(completed)
+            FileProcessor.cleanup_review_copies(
+                completed,
+                empty_directories=(
+                    [cleanup_directory] if cleanup_directory else []
+                ),
+            )
             raise
 
     @staticmethod
-    def cleanup_review_copies(copies):
-        parents = set()
+    def _review_version_directory(copies):
+        parents = {
+            os.path.dirname(
+                os.path.abspath(os.path.normpath(destination))
+            )
+            for _source, destination in copies or []
+        }
+        return parents.pop() if len(parents) == 1 else ""
+
+    @staticmethod
+    def cleanup_review_copies(copies, empty_directories=None):
+        parents = set(empty_directories or [])
         for _source, destination in copies or []:
             destination = os.path.abspath(os.path.normpath(destination))
             parents.add(os.path.dirname(destination))

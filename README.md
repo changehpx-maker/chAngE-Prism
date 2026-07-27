@@ -79,7 +79,7 @@ Asset Library 的源列表直接在 `Asset Library` 页签内管理，同样写�
 
 | Settings 字段 | 说明 |
 |---|---|
-| `Server Publish Root` | Batch Import 的服务器根目录；未设置时 Windows 回退到 `P:\` |
+| `Server Publish Root` | Batch Import 的服务器根目录；无内置默认值，必须由 Settings 设置 |
 | `Local Projects Root` | Batch Import 创建或打开本地 Prism 项目的根目录 |
 | `Daily Review Destination` | Daily Review Copy 根目录，实际目标为 `<root>/YYYY-MM-DD/` |
 | `Hython (from Prism)` | 只读；由 `Settings > User > Apps > Houdini` 的 executable override 自动推导 |
@@ -114,7 +114,7 @@ Prism 用户设置。旧版根目录 `config.json` 不再参与运行，可在�
 - `Create shot only` 仅创建或更新 Prism 镜头、Fx/Effects 等部门与任务、预设场景和帧范围；Shotinfo 不写入镜头 metadata。
 - 默认模式保留服务器源文件路径，在 `published_ref/v####` 写入标准化 `versioninfo.json`；`Copy to local` 会先复制三个发布 step，再让记录和 PDG 指向本地版本。
 - Review MOV 进入 Prism `playblasts` 类型的 `review` media 版本；不同 step 的同名 MOV 会保留并自动加 step 前缀。
-- `Run PDG FBX Convert` 只把成功镜头中的 FBX、帧范围和脱敏后的必要 XML metadata 写入独立的 `%TEMP%\change_prism_pdg_<随机>\shot_data.json`，并在导入完成后后台启动一次 `hython + topcook.py`。JSON 路径通过 `SHOT_BUILDER_PDG_JSON` 传入，Hython 结束后自动清理；结束弹窗会给出退出码和 stdout/stderr 日志路径。
+- `Run PDG FBX Convert` 只把成功镜头中的 FBX、帧范围和 Animation XML 的必要 metadata 写入独立的 `%TEMP%\chAngE_Prism\batch_import\pdg\json\change_prism_pdg_<随机>\shot_data.json`，并在导入完成后后台启动一次 `hython + topcook.py`。JSON 路径通过 `SHOT_BUILDER_PDG_JSON` 传入，Hython 结束后保留以便排查；结束弹窗会给出 JSON、stdout 和 stderr 路径。
 - Hython 始终来自 Prism 当前 Houdini executable override；`topcook.py` 从同一 Houdini 安装目录推导，不再保存 `hython_path` 或 `topcook_path`。
 - PDG 明确设置 `SHOT_BUILDER_PDG_JSON` 和 Settings 中的 `HOUDINI_PACKAGE_DIR`，不再要求系统预先配置 `PIPELINE_ROOT`。
 

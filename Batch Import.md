@@ -90,8 +90,9 @@ shot001
 
 勾选 `Run PDG FBX Convert` 后，Batch Import 完成时：
 
-1. 只把成功镜头中的 FBX、帧范围和脱敏后的必要 XML metadata 写到
-   独立的 `%TEMP%\change_prism_pdg_<随机>\shot_data.json`。
+1. 只把成功镜头中的 FBX、帧范围和 Animation XML 的必要 metadata 写到
+   独立的
+   `%TEMP%\chAngE_Prism\batch_import\pdg\json\change_prism_pdg_<随机>\shot_data.json`。
 2. 从 Prism 当前 Houdini executable override 的同目录推导 `hython.exe`。
 3. 从该 Houdini 安装目录推导 `houdini/python*libs/pdgjob/topcook.py`。
 4. 后台启动一次 `hython -u topcook.py --hip ... --toppath /obj/topnet`。
@@ -115,12 +116,16 @@ Settings > User > chAngE_Prism
 - `HOUDINI_PACKAGE_DIR`
 
 不再读取插件根目录 `config.json`，也不要求系统设置 `PIPELINE_ROOT`。
-Hython 结束后会删除本次临时 JSON 和它的随机目录。
+Hython 启动后，本次 JSON 和随机目录在运行结束后保留，方便复查输入数据。
 
-日志位于 Prism 用户配置文件旁：
+stdout/stderr 日志统一位于：
 
 ```text
-<Prism user prefs folder>/chAngE_Prism/logs/pdg/
+%TEMP%\chAngE_Prism\batch_import\pdg\logs\
 ```
 
-单镜头导入失败不会中断整个批次。失败列表会在结果窗口显示，并写入同一用户目录下的 `logs/reports/`。
+单镜头导入失败不会中断整个批次。失败列表会在结果窗口显示，并写入：
+
+```text
+%TEMP%\chAngE_Prism\batch_import\reports\json\
+```

@@ -10,7 +10,11 @@ from qtpy.QtCore import QThread, Signal
 
 from change_prism.batch_import.file_processor import FileProcessor
 from change_prism.batch_import.scanner import STEP_LABELS
-from change_prism.batch_import.service import get_log_dir, prune_old_files
+from change_prism.batch_import.service import (
+    get_log_dir,
+    get_output_dir,
+    prune_old_files,
+)
 from change_prism.config import (
     SETTINGS_LOCATION,
     get_houdini_package_directory,
@@ -23,6 +27,11 @@ ANIMATION_LABEL = STEP_LABELS["shot_motion/shot_animation"]
 PDG_MODE_LABEL = "PDG FBX Convert"
 PDG_TEMP_PREFIX = "change_prism_pdg_"
 MAX_PDG_LOG_FILES = 40
+PDG_FRAME_ATTRIBUTE_KEYS = (
+    "render_start_frame",
+    "start_frame",
+    "sequence_frame",
+)
 
 
 class _PDGMonitor(QThread):
@@ -181,12 +190,14 @@ class PDGProcessor(object):
             )
             self._pdg_monitor.start()
             self.core.popup(
-                "%s started in the background.\n\nPID: %s\nstdout: %s\nstderr: %s"
+                "%s started in the background.\n\nPID: %s\n"
+                "stdout: %s\nstderr: %s\nshot data: %s"
                 % (
                     PDG_MODE_LABEL,
                     self._pdg_process.pid,
                     stdout_path,
                     stderr_path,
+                    self._json_path,
                 ),
                 severity="info",
             )
@@ -204,6 +215,8 @@ class PDGProcessor(object):
     def _on_pdg_finished(
         self, pid, return_code, stdout_path="", stderr_path=""
     ):
+        json_path = self._json_path
+        self._json_path = ""
         stderr_has_errors = self._stderr_has_errors(stderr_path)
         failed = return_code != 0 or stderr_has_errors
         status = "failed" if failed else "completed"
@@ -215,7 +228,8 @@ class PDGProcessor(object):
         )
         try:
             self.core.popup(
-                "%s %s.\n\nPID: %s\nExit code: %s%s\nstdout: %s\nstderr: %s"
+                "%s %s.\n\nPID: %s\nExit code: %s%s\n"
+                "stdout: %s\nstderr: %s\nshot data: %s"
                 % (
                     PDG_MODE_LABEL,
                     status,
@@ -224,11 +238,11 @@ class PDGProcessor(object):
                     error_note,
                     stdout_path,
                     stderr_path,
+                    json_path,
                 ),
                 severity=severity,
             )
         finally:
-            self._cleanup_pdg_json()
             self._pdg_monitor = None
             self._pdg_process = None
 
@@ -257,31 +271,12 @@ class PDGProcessor(object):
             sequence = shot_data.get("sequence", "")
             shot = shot_data.get("shot", "")
             key = "%s/%s/%s" % (episode, sequence, shot)
-            source_root = (
-                shot_data.get("source_file_root")
-                or shot_data.get("source_server_dir")
-                or ""
-            )
-
             file_dict = []
             for step in shot_data.get("steps", {}).values():
                 for path in step.get("fbx", []):
                     if not str(path).lower().endswith(".fbx"):
                         continue
-                    try:
-                        relative = (
-                            os.path.relpath(path, source_root)
-                            if source_root
-                            else path
-                        )
-                    except ValueError:
-                        relative = path
-                    file_dict.append(
-                        {
-                            "path": path,
-                            "relpath": str(relative).replace("\\", "/"),
-                        }
-                    )
+                    file_dict.append({"path": path})
             if not file_dict:
                 continue
 
@@ -322,31 +317,21 @@ class PDGProcessor(object):
 
     @staticmethod
     def _build_xml_data(shot_data):
-        xml_data = {}
         animation = shot_data.get("steps", {}).get(
             ANIMATION_LABEL, {}
         )
         animation_xml = animation.get("xml", {})
-        if animation_xml:
-            xml_data["path"] = animation_xml.get("path", "")
-            xml_data["attributes"] = animation_xml.get(
-                "attributes", {}
-            )
-        for label, key in (
-            ("Cloth", "cloth_solution"),
-            ("Hair", "hair_solution"),
-        ):
-            solution_xml = (
-                shot_data.get("steps", {})
-                .get(label, {})
-                .get("xml", {})
-            )
-            if solution_xml.get("path"):
-                xml_data[key] = {
-                    "xml_path": solution_xml.get("path", ""),
-                    "attributes": solution_xml.get("attributes", {}),
-                }
-        return xml_data
+        if not animation_xml:
+            return {}
+        attributes = animation_xml.get("attributes", {})
+        return {
+            "path": animation_xml.get("path", ""),
+            "attributes": {
+                key: attributes[key]
+                for key in PDG_FRAME_ATTRIBUTE_KEYS
+                if key in attributes
+            },
+        }
 
     def _resolve_products_path(self, entity):
         try:
@@ -407,7 +392,11 @@ class PDGProcessor(object):
             raise ValueError("Missing: %s" % ", ".join(missing))
 
     def _write_pdg_json(self, data):
-        directory = tempfile.mkdtemp(prefix=PDG_TEMP_PREFIX)
+        json_root = get_output_dir("pdg", "json")
+        directory = tempfile.mkdtemp(
+            prefix=PDG_TEMP_PREFIX,
+            dir=json_root,
+        )
         path = os.path.join(directory, "shot_data.json")
         try:
             with open(path, "w", encoding="utf-8") as handle:
@@ -436,10 +425,10 @@ class PDGProcessor(object):
         if not path:
             return
         directory = os.path.realpath(os.path.dirname(path))
-        temp_root = os.path.realpath(tempfile.gettempdir())
+        json_root = os.path.realpath(get_output_dir("pdg", "json"))
         if (
             os.path.normcase(os.path.dirname(directory))
-            != os.path.normcase(temp_root)
+            != os.path.normcase(json_root)
             or not os.path.basename(directory).startswith(
                 PDG_TEMP_PREFIX
             )
