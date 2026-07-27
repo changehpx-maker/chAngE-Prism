@@ -70,7 +70,7 @@ change_prism/
 - 不读取或写入插件根目录 `config.json`，也不要把用户机器绝对路径硬编码进运行时代码。
 - 当前项目 OCIO 的内部 key 使用规范化项目路径；UI 显示保留 Prism 原始路径大小写。
 - Batch Import 的 Hython 从 Prism Houdini executable override 推导，`topcook.py` 从同一安装目录查找；不保存 `hython_path` 或 `topcook_path`。
-- PDG 通过环境显式传入 `SHOT_BUILDER_PDG_JSON` 和 `HOUDINI_PACKAGE_DIR`，不要求系统 `PIPELINE_ROOT`。
+- PDG 为每次运行创建独立的 `%TEMP%\change_prism_pdg_<随机>\shot_data.json`，通过 `SHOT_BUILDER_PDG_JSON` 和 `HOUDINI_PACKAGE_DIR` 显式传入 Hython，并在进程结束后清理临时 JSON；不要求系统 `PIPELINE_ROOT`。
 - Asset Library sources 是 Prism 用户全局配置，不写入项目配置。
 
 ## Batch Import 不变量
@@ -83,7 +83,7 @@ change_prism/
 
 - `SERVER_STEPS` 固定映射 Animation、Cloth、Hair；`_list_dirs` 有 `lru_cache`，每次 search 前必须调用 `clear_list_dirs_cache()`。
 - Prism `sequence` = 服务器 `episode`；Prism `shot` = `<server_sequence>_<server_shot>`。
-- metadata 使用 `chAngE_server_project`、`chAngE_server_scene`、`chAngE_server_shot`。
+- Batch Import 的 Shotinfo 只保存帧范围，不写入镜头 metadata。
 - 同 sequence 的 `getShots()` 结果按批次缓存；新建镜头后同步更新缓存。
 - Review MOV 通过 Prism media API 导入；同名文件必须避免覆盖。
 - PDG 模块保持懒加载，只在用户启用且存在成功 FBX 数据时启动一次后台 Hython。

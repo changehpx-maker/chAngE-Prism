@@ -182,3 +182,91 @@ class FileProcessorTests(unittest.TestCase):
             self.assertTrue(
                 copied.startswith(str(product / "v0001"))
             )
+
+    def test_process_removes_new_product_version_on_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            product = Path(directory) / "products" / "published_ref"
+            processor = FileProcessor(_Core(product))
+            with mock.patch.object(
+                processor,
+                "build_product_data",
+                side_effect=OSError("copy failed"),
+            ):
+                with self.assertRaises(OSError):
+                    processor.process(
+                        {
+                            "episode": "EP01",
+                            "sequence": "SC01",
+                            "shot": "shot001",
+                        },
+                        {"type": "shot"},
+                        "show",
+                        copy_to_local=True,
+                    )
+
+            self.assertFalse((product / "v0001").exists())
+
+    def test_review_copy_failure_removes_only_files_created_by_run(self):
+        processor = FileProcessor(_Core("unused"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mov"
+            source.write_bytes(b"review")
+            missing = root / "missing.mov"
+            destination_root = root / "review"
+            destination_root.mkdir()
+            first_destination = destination_root / "first.mov"
+            protected_destination = destination_root / "protected.mov"
+            protected_destination.write_bytes(b"existing")
+
+            with self.assertRaises(FileNotFoundError):
+                processor.execute_review_copies(
+                    [
+                        (str(source), str(first_destination)),
+                        (
+                            str(missing),
+                            str(destination_root / "second.mov"),
+                        ),
+                    ]
+                )
+
+            self.assertFalse(first_destination.exists())
+            self.assertEqual(
+                protected_destination.read_bytes(), b"existing"
+            )
+
+            with self.assertRaises(FileExistsError):
+                processor.execute_review_copies(
+                    [(str(source), str(protected_destination))]
+                )
+            self.assertEqual(
+                protected_destination.read_bytes(), b"existing"
+            )
+
+    def test_xml_context_redacts_personal_fields(self):
+        entry = FileProcessor._make_step_entry(
+            {},
+            xml_path="description.xml",
+            xml_attributes={
+                "sequence_frame": 10,
+                "user_name": "top-level artist",
+                "context": {
+                    "project_code": "show",
+                    "user_phone": "secret",
+                    "user_name": "artist",
+                    "user_icon": "https://example.invalid/avatar",
+                    "status_code": "inprogress",
+                },
+            },
+            frame_range=[1001, 1010],
+        )
+
+        attributes = entry["xml"]["attributes"]
+        self.assertEqual(attributes["project_code"], "show")
+        self.assertEqual(
+            attributes["context"]["status_code"], "inprogress"
+        )
+        self.assertNotIn("user_phone", attributes["context"])
+        self.assertNotIn("user_name", attributes["context"])
+        self.assertNotIn("user_icon", attributes["context"])
+        self.assertNotIn("user_name", attributes)

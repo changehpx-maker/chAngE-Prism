@@ -37,18 +37,31 @@ class _Reporter:
 
 
 class _Projects:
+    def __init__(self):
+        self.create_calls = 0
+        self.changed_path = ""
+        self.change_succeeds = True
+
     def createProject(self, name, path, **_kwargs):
         del name
-        config = Path(path) / "00_Pipeline" / "project_config.json"
+        self.create_calls += 1
+        config = Path(path) / "00_Pipeline" / "pipeline.json"
         config.parent.mkdir(parents=True)
         config.write_text("{}", encoding="utf-8")
         return str(config)
 
-    def changeProject(self, _path):
-        pass
+    def changeProject(self, path):
+        self.changed_path = str(path)
+        return str(path) if self.change_succeeds else None
 
     def setDepartments(self, _entity_type, _departments):
         pass
+
+
+class _Configs:
+    @staticmethod
+    def getProjectConfigPath(path):
+        return str(Path(path) / "00_Pipeline" / "pipeline.json")
 
 
 class _Entities:
@@ -95,6 +108,7 @@ class _MediaProducts:
 
 class _ImportCore:
     def __init__(self, product_root):
+        self.configs = _Configs()
         self.projects = _Projects()
         self.entities = _Entities()
         self.products = _Products(product_root)
@@ -207,6 +221,98 @@ class BatchImportDialogTests(unittest.TestCase):
                 )
             finally:
                 parent.close()
+        app.processEvents()
+
+    def test_dialog_waits_for_async_callback_and_reuses_pipeline_config(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project_root = root / "show"
+            config = project_root / "00_Pipeline" / "pipeline.json"
+            config.parent.mkdir(parents=True)
+            config.write_text("{}", encoding="utf-8")
+            core = _ImportCore(
+                str(root / "products" / "published_ref")
+            )
+            controller = BatchImportController(core, object())
+            finished = []
+            dialog = BatchImportDialog(
+                core,
+                str(root),
+                controller._start_project_and_shots,
+                finish_callback=lambda _dialog, result: finished.append(
+                    result
+                ),
+            )
+            dialog.project_combo.addItem("show")
+            dialog.project_combo.setCurrentText("show")
+            dialog.local_path_edit.setText(str(root))
+            dialog.create_only_cb.setChecked(True)
+            dialog.scan_results = [
+                {
+                    "project_code": "show",
+                    "episode": "EP01",
+                    "sequence": "SC01",
+                    "shot": "shot001",
+                    "server_dir": str(root / "server" / "shot001"),
+                    "frame_range": [1001, 1100],
+                    "steps": [],
+                }
+            ]
+            dialog._populate_results()
+            try:
+                dialog._on_create_clicked()
+                self.assertTrue(dialog._import_running)
+                self.assertEqual(finished, [])
+                self.assertTrue(
+                    self._wait_for(app, lambda: bool(finished))
+                )
+                self.assertFalse(dialog._import_running)
+                self.assertEqual(finished[0]["success"], 1)
+                self.assertEqual(core.projects.create_calls, 0)
+                self.assertEqual(
+                    core.projects.changed_path, str(config)
+                )
+            finally:
+                dialog.close()
+        app.processEvents()
+
+    def test_project_load_failure_stops_before_import(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "show" / "00_Pipeline" / "pipeline.json"
+            config.parent.mkdir(parents=True)
+            config.write_text("{}", encoding="utf-8")
+            core = _ImportCore(
+                str(root / "products" / "published_ref")
+            )
+            core.projects.change_succeeds = False
+            controller = BatchImportController(core, object())
+            finished = []
+
+            controller._start_project_and_shots(
+                {
+                    "project_name": "show",
+                    "project_path": str(root / "show"),
+                    "selected": [
+                        {
+                            "episode": "EP01",
+                            "sequence": "SC01",
+                            "shot": "shot001",
+                        }
+                    ],
+                    "_reporter": _Reporter(),
+                    "_finished_callback": finished.append,
+                }
+            )
+
+            self.assertEqual(len(finished), 1)
+            self.assertIn(
+                "could not load project config",
+                finished[0]["error"],
+            )
+            self.assertIsNone(controller._import_state)
         app.processEvents()
 
 

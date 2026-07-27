@@ -66,9 +66,9 @@ shot001
 
 - Prism sequence = 服务器 episode。
 - Prism shot = `<sequence>_<shot>`。
-- 新镜头创建 FX/Effects、Lighting/Lighting、Compositing/Compositing。
+- 新镜头创建 Fx/Effects、Lighting/Lighting、Compositing/Compositing。
 - 创建匹配 Houdini/Nuke 的预设场景。
-- 更新帧范围和 `chAngE_server_*` metadata。
+- Shotinfo 只更新帧范围，不写入镜头 metadata。
 
 不创建 `published_ref`，不导入 review，不运行 PDG。
 
@@ -90,7 +90,8 @@ shot001
 
 勾选 `Run PDG FBX Convert` 后，Batch Import 完成时：
 
-1. 只把成功镜头中的 FBX 写到独立临时 `shot_data.json`。
+1. 只把成功镜头中的 FBX、帧范围和脱敏后的必要 XML metadata 写到
+   独立的 `%TEMP%\change_prism_pdg_<随机>\shot_data.json`。
 2. 从 Prism 当前 Houdini executable override 的同目录推导 `hython.exe`。
 3. 从该 Houdini 安装目录推导 `houdini/python*libs/pdgjob/topcook.py`。
 4. 后台启动一次 `hython -u topcook.py --hip ... --toppath /obj/topnet`。
@@ -110,10 +111,11 @@ Settings > User > chAngE_Prism
 插件会合并 Prism 的 `startEnv`、Houdini 用户环境、项目环境和
 `preLaunchApp` 回调，随后显式设置：
 
-- `SHOT_BUILDER_PDG_JSON`
+- `SHOT_BUILDER_PDG_JSON`（指向本次运行的独立临时 JSON）
 - `HOUDINI_PACKAGE_DIR`
 
 不再读取插件根目录 `config.json`，也不要求系统设置 `PIPELINE_ROOT`。
+Hython 结束后会删除本次临时 JSON 和它的随机目录。
 
 日志位于 Prism 用户配置文件旁：
 

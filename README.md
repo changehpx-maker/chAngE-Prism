@@ -111,10 +111,10 @@ Prism 用户设置。旧版根目录 `config.json` 不再参与运行，可在�
 
 - 扫描 `shot_animation`、`cloth_solution`、`hair_solution`，递归识别大小写不敏感的 FBX、ABC、MOV 和 XML。
 - Filter 支持完整 `episode/sequence/shot` 行，也支持连续三行 `episode/`、`sequence/`、`shot`。
-- `Create shot only` 仅创建或更新 Prism 镜头、部门、任务、预设场景、帧范围和服务器 metadata。
+- `Create shot only` 仅创建或更新 Prism 镜头、Fx/Effects 等部门与任务、预设场景和帧范围；Shotinfo 不写入镜头 metadata。
 - 默认模式保留服务器源文件路径，在 `published_ref/v####` 写入标准化 `versioninfo.json`；`Copy to local` 会先复制三个发布 step，再让记录和 PDG 指向本地版本。
 - Review MOV 进入 Prism `playblasts` 类型的 `review` media 版本；不同 step 的同名 MOV 会保留并自动加 step 前缀。
-- `Run PDG FBX Convert` 只把 FBX 写入临时 JSON，并在导入完成后后台启动一次 `hython + topcook.py`。结束弹窗会给出退出码和 stdout/stderr 日志路径。
+- `Run PDG FBX Convert` 只把成功镜头中的 FBX、帧范围和脱敏后的必要 XML metadata 写入独立的 `%TEMP%\change_prism_pdg_<随机>\shot_data.json`，并在导入完成后后台启动一次 `hython + topcook.py`。JSON 路径通过 `SHOT_BUILDER_PDG_JSON` 传入，Hython 结束后自动清理；结束弹窗会给出退出码和 stdout/stderr 日志路径。
 - Hython 始终来自 Prism 当前 Houdini executable override；`topcook.py` 从同一 Houdini 安装目录推导，不再保存 `hython_path` 或 `topcook_path`。
 - PDG 明确设置 `SHOT_BUILDER_PDG_JSON` 和 Settings 中的 `HOUDINI_PACKAGE_DIR`，不再要求系统预先配置 `PIPELINE_ROOT`。
 

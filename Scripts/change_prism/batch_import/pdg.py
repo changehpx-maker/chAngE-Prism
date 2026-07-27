@@ -10,7 +10,7 @@ from qtpy.QtCore import QThread, Signal
 
 from change_prism.batch_import.file_processor import FileProcessor
 from change_prism.batch_import.scanner import STEP_LABELS
-from change_prism.batch_import.service import get_log_dir
+from change_prism.batch_import.service import get_log_dir, prune_old_files
 from change_prism.config import (
     SETTINGS_LOCATION,
     get_houdini_package_directory,
@@ -21,6 +21,8 @@ from change_prism.dcc_paths import get_prism_hython
 
 ANIMATION_LABEL = STEP_LABELS["shot_motion/shot_animation"]
 PDG_MODE_LABEL = "PDG FBX Convert"
+PDG_TEMP_PREFIX = "change_prism_pdg_"
+MAX_PDG_LOG_FILES = 40
 
 
 class _PDGMonitor(QThread):
@@ -70,7 +72,19 @@ class PDGProcessor(object):
         self._pdg_monitor = None
         self._json_path = ""
 
+    def is_running(self):
+        return (
+            self._pdg_process is not None
+            and self._pdg_process.poll() is None
+        )
+
     def run(self, shot_data_list, project_name):
+        if self.is_running():
+            self.core.popup(
+                "%s is already running." % PDG_MODE_LABEL,
+                severity="warning",
+            )
+            return False
         try:
             pdg_data = self._build_pdg_json(shot_data_list)
             if not pdg_data:
@@ -114,8 +128,25 @@ class PDGProcessor(object):
             stdout_path, stderr_path = self._make_pdg_log_paths(
                 project_name
             )
-            stdout_file = open(stdout_path, "w", encoding="utf-8")
-            stderr_file = open(stderr_path, "w", encoding="utf-8")
+            stdout_file = None
+            stderr_file = None
+            try:
+                stdout_file = open(
+                    stdout_path, "w", encoding="utf-8"
+                )
+                stderr_file = open(
+                    stderr_path, "w", encoding="utf-8"
+                )
+            except Exception:
+                for handle in (stdout_file, stderr_file):
+                    if handle is not None:
+                        handle.close()
+                raise
+            prune_old_files(
+                os.path.dirname(stdout_path),
+                suffix=".log",
+                keep=MAX_PDG_LOG_FILES,
+            )
             kwargs = {
                 "env": environment,
                 "stdout": stdout_file,
@@ -161,6 +192,8 @@ class PDGProcessor(object):
             )
             return True
         except Exception as exc:
+            if not self.is_running():
+                self._cleanup_pdg_json()
             self.core.popup(
                 "%s could not start:\n\n%s\n\nConfigure paths in %s."
                 % (PDG_MODE_LABEL, exc, SETTINGS_LOCATION),
@@ -171,22 +204,51 @@ class PDGProcessor(object):
     def _on_pdg_finished(
         self, pid, return_code, stdout_path="", stderr_path=""
     ):
-        status = "completed" if return_code == 0 else "failed"
-        severity = "info" if return_code == 0 else "error"
-        self.core.popup(
-            "%s %s.\n\nPID: %s\nExit code: %s\nstdout: %s\nstderr: %s"
-            % (
-                PDG_MODE_LABEL,
-                status,
-                pid,
-                return_code,
-                stdout_path,
-                stderr_path,
-            ),
-            severity=severity,
+        stderr_has_errors = self._stderr_has_errors(stderr_path)
+        failed = return_code != 0 or stderr_has_errors
+        status = "failed" if failed else "completed"
+        severity = "error" if failed else "info"
+        error_note = (
+            "\nDetected error output in stderr."
+            if stderr_has_errors and return_code == 0
+            else ""
         )
-        self._pdg_monitor = None
-        self._pdg_process = None
+        try:
+            self.core.popup(
+                "%s %s.\n\nPID: %s\nExit code: %s%s\nstdout: %s\nstderr: %s"
+                % (
+                    PDG_MODE_LABEL,
+                    status,
+                    pid,
+                    return_code,
+                    error_note,
+                    stdout_path,
+                    stderr_path,
+                ),
+                severity=severity,
+            )
+        finally:
+            self._cleanup_pdg_json()
+            self._pdg_monitor = None
+            self._pdg_process = None
+
+    @staticmethod
+    def _stderr_has_errors(stderr_path):
+        if not stderr_path or not os.path.isfile(stderr_path):
+            return False
+        try:
+            with open(
+                stderr_path, "r", encoding="utf-8", errors="replace"
+            ) as handle:
+                for line in handle:
+                    stripped = line.lstrip()
+                    if stripped.startswith(
+                        ("ERROR:", "Traceback ", "Error:")
+                    ):
+                        return True
+        except OSError:
+            return False
+        return False
 
     def _build_pdg_json(self, shot_data_list):
         result = {}
@@ -240,6 +302,7 @@ class PDGProcessor(object):
             result[key] = {
                 "entity": entity,
                 "shot_code": entity["shot"],
+                "project_code": shot_data.get("project_code", ""),
                 "file_dict": file_dict,
                 "xml": self._build_xml_data(shot_data),
                 "frame_range": (
@@ -344,17 +407,52 @@ class PDGProcessor(object):
             raise ValueError("Missing: %s" % ", ".join(missing))
 
     def _write_pdg_json(self, data):
-        directory = tempfile.mkdtemp(prefix="change_prism_pdg_")
+        directory = tempfile.mkdtemp(prefix=PDG_TEMP_PREFIX)
         path = os.path.join(directory, "shot_data.json")
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(
-                data,
-                handle,
-                ensure_ascii=False,
-                indent=2,
-                default=str,
-            )
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    data,
+                    handle,
+                    ensure_ascii=False,
+                    indent=2,
+                    default=str,
+                )
+        except Exception:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            try:
+                os.rmdir(directory)
+            except OSError:
+                pass
+            raise
         return path
+
+    def _cleanup_pdg_json(self):
+        path = self._json_path
+        self._json_path = ""
+        if not path:
+            return
+        directory = os.path.realpath(os.path.dirname(path))
+        temp_root = os.path.realpath(tempfile.gettempdir())
+        if (
+            os.path.normcase(os.path.dirname(directory))
+            != os.path.normcase(temp_root)
+            or not os.path.basename(directory).startswith(
+                PDG_TEMP_PREFIX
+            )
+        ):
+            return
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        try:
+            os.rmdir(directory)
+        except OSError:
+            pass
 
     def _make_pdg_log_paths(self, project_name):
         safe_project = "".join(
@@ -363,7 +461,10 @@ class PDGProcessor(object):
         )
         prefix = "%s_%s" % (
             safe_project,
-            time.strftime("%Y%m%d_%H%M%S"),
+            "%s_%s" % (
+                time.strftime("%Y%m%d_%H%M%S"),
+                os.getpid(),
+            ),
         )
         directory = get_log_dir(self.core, "pdg")
         return (

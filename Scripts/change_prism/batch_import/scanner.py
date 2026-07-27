@@ -40,15 +40,12 @@ _STEP_FILE_SPEC = {
 def _list_dirs(path):
     if not os.path.isdir(path):
         return []
-    try:
-        return sorted(
-            name
-            for name in os.listdir(path)
-            if os.path.isdir(os.path.join(path, name))
-            and not name.startswith(".")
-        )
-    except OSError:
-        return []
+    return sorted(
+        name
+        for name in os.listdir(path)
+        if os.path.isdir(os.path.join(path, name))
+        and not name.startswith(".")
+    )
 
 
 def clear_list_dirs_cache():
@@ -187,16 +184,16 @@ def _collect_matching_files(path, patterns):
 
 
 def _safe_walk(path):
-    try:
-        for root, directories, files in os.walk(path):
-            directories[:] = sorted(
-                directory
-                for directory in directories
-                if not directory.startswith(".")
-            )
-            yield root, directories, files
-    except OSError:
-        return
+    def raise_error(error):
+        raise error
+
+    for root, directories, files in os.walk(path, onerror=raise_error):
+        directories[:] = sorted(
+            directory
+            for directory in directories
+            if not directory.startswith(".")
+        )
+        yield root, directories, files
 
 
 def scan_server_shots(server_root, filter_strs, project_code=None):

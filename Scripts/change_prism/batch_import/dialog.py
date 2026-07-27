@@ -539,7 +539,8 @@ class BatchImportDialog(QDialog):
         except Exception as exc:
             self._on_import_error(str(exc))
             return
-        self._on_import_finished(result)
+        if result is not None:
+            self._on_import_finished(result)
 
     def _on_import_finished(self, result):
         self._import_running = False
