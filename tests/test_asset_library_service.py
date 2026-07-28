@@ -76,6 +76,33 @@ class AssetLibraryServiceTests(unittest.TestCase):
                 ["category.hdr"],
             )
 
+    def test_multiple_directories_combine_direct_files_and_deduplicate_paths(
+        self,
+    ):
+        first = self._asset(
+            "source-a",
+            "C:/library/clear/first.exr",
+            "clear",
+        )
+        second = self._asset(
+            "source-a",
+            "C:/library/outdoor/second.exr",
+            "outdoor",
+        )
+        duplicate = dict(first)
+        duplicate["source_id"] = "source-b"
+
+        selected = service.assets_in_directories(
+            [first, second, duplicate],
+            [
+                ("source-a", "C:/library/clear"),
+                ("source-a", "C:/library/outdoor"),
+                ("source-b", "C:/library/clear"),
+            ],
+        )
+
+        self.assertEqual(selected, [first, second])
+
     def test_global_search_matches_filename_source_and_relative_directory(self):
         assets = [
             {

@@ -603,13 +603,16 @@ class AssetLibraryWidget(QWidget):
         self.source_tree = QTreeWidget(left)
         self.source_tree.setHeaderLabels(["Source / Folder", "Status"])
         self.source_tree.setSelectionMode(
-            QAbstractItemView.SingleSelection
+            QAbstractItemView.ExtendedSelection
         )
         self.source_tree.itemChanged.connect(
             self._on_source_item_changed
         )
         self.source_tree.currentItemChanged.connect(
             self._on_tree_selection_changed
+        )
+        self.source_tree.itemSelectionChanged.connect(
+            self._update_generate_button
         )
         left_layout.addWidget(self.source_tree, 1)
         splitter.addWidget(left)
@@ -663,7 +666,8 @@ class AssetLibraryWidget(QWidget):
         )
         self.generate_thumbnails_button.setToolTip(
             "Generate missing or outdated thumbnails for images directly "
-            "inside the selected folder."
+            "inside all selected folders. Use Ctrl or Shift to select "
+            "multiple folders."
         )
         self.generate_thumbnails_button.clicked.connect(
             self.generate_selected_thumbnails
@@ -1123,13 +1127,16 @@ class AssetLibraryWidget(QWidget):
             self._schedule_visible_thumbnails()
 
     def _selected_directory_assets(self):
-        item = self.source_tree.currentItem()
-        if item is None:
-            return []
-        return service.assets_in_directory(
+        directories = [
+            (
+                item.data(0, SOURCE_ID_ROLE),
+                item.data(0, PATH_ROLE),
+            )
+            for item in self.source_tree.selectedItems()
+        ]
+        return service.assets_in_directories(
             self.scan_result.get("assets", []),
-            item.data(0, SOURCE_ID_ROLE),
-            item.data(0, PATH_ROLE),
+            directories,
         )
 
     def _update_generate_button(self):
@@ -1146,7 +1153,7 @@ class AssetLibraryWidget(QWidget):
         assets = self._selected_directory_assets()
         if not assets:
             self.status_label.setText(
-                "No supported images directly in the selected folder."
+                "No supported images directly in the selected folder(s)."
             )
             self._update_generate_button()
             return

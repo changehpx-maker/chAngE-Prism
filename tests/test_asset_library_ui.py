@@ -14,6 +14,7 @@ try:
     from qtpy.QtCore import QRect, QSize, Qt
     from qtpy.QtGui import QImage, QPixmap
     from qtpy.QtWidgets import (
+        QAbstractItemView,
         QApplication,
         QMenuBar,
         QMessageBox,
@@ -653,6 +654,76 @@ class AssetLibraryUiTests(unittest.TestCase):
                 self.assertIn(
                     "1 up to date",
                     widget.status_label.text(),
+                )
+            finally:
+                widget.close()
+        app.processEvents()
+
+    def test_thumbnail_generation_combines_multiple_selected_folders(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            source = os.path.join(tmp, "categories")
+            clear = os.path.join(source, "clear")
+            outdoor = os.path.join(source, "outdoor")
+            os.makedirs(clear)
+            os.makedirs(outdoor)
+            clear_path = os.path.join(clear, "clear.png")
+            outdoor_path = os.path.join(outdoor, "outdoor.png")
+            for path in (clear_path, outdoor_path):
+                image = QImage(20, 10, QImage.Format_RGB32)
+                image.fill(0xFF336699)
+                self.assertTrue(image.save(path))
+
+            core = _Core([{"path": source, "enabled": True}])
+            widget = AssetLibraryWidget(core)
+            try:
+                widget.scan_result = service.scan_sources(
+                    core.data["change_prism"]["asset_library"]["sources"]
+                )
+                widget._populate_tree()
+                root_item = widget.source_tree.topLevelItem(0)
+                folders = {
+                    root_item.child(index).text(0): root_item.child(index)
+                    for index in range(root_item.childCount())
+                }
+                widget.source_tree.setCurrentItem(folders["clear"])
+                folders["outdoor"].setSelected(True)
+                widget._thumbnail_timer.stop()
+
+                self.assertEqual(
+                    widget.source_tree.selectionMode(),
+                    QAbstractItemView.ExtendedSelection,
+                )
+                self.assertEqual(
+                    len(widget.source_tree.selectedItems()),
+                    2,
+                )
+                self.assertTrue(
+                    widget.generate_thumbnails_button.isEnabled()
+                )
+                self.assertEqual(
+                    [
+                        record["filename"]
+                        for record in widget.asset_model.records
+                    ],
+                    ["clear.png"],
+                )
+
+                widget._thumbnail_queue.clear()
+                with mock.patch.object(widget, "_start_next_thumbnail"):
+                    widget.generate_selected_thumbnails()
+                self.assertEqual(
+                    {
+                        job["path"]
+                        for job in widget._thumbnail_queue
+                    },
+                    {clear_path, outdoor_path},
+                )
+                self.assertTrue(
+                    all(
+                        job["manual"]
+                        for job in widget._thumbnail_queue
+                    )
                 )
             finally:
                 widget.close()
