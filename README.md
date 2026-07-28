@@ -98,7 +98,7 @@ Prism 用户设置。旧版根目录 `config.json` 不再参与运行，可在�
 - 支持 EXR、HDR、JPG/JPEG、PNG、TIF/TIFF、TGA 和 BMP。
 - 左侧目录树控制浏览位置，右侧只显示当前目录的直属图片。
 - 非空搜索会搜索所有启用源；同一源内具有相同文件名、大小和修改时间的多分类副本合并显示，并可在详情中选择实际路径。
-- 选择目录后点击 `Generate Thumbnails`，只为该目录直属素材生成缺失或过期的缩略图；浏览和刷新只读取已有缓存。生成时总并发最多 4 个，其中 HDR/EXR 最多 2 个。缩略图写入素材旁的 `_thumbs/<原文件名含扩展>.jpg`，移除源不会删除素材或缩略图。
+- 选择目录后点击 `Generate Thumbnails`，只为目录直属素材生成缺失或过期的缩略图；按住 `Ctrl` 或 `Shift` 可多选文件夹并合并生成，重复真实路径只处理一次。浏览和刷新只读取已有缓存。生成时总并发最多 4 个，其中 HDR/EXR 最多 2 个。缩略图写入素材旁的 `_thumbs/<原文件名含扩展>.jpg`，移除源不会删除素材或缩略图。
 - 工具栏 `Size` 支持 `Small`、`Medium`、`Large`，独立 Prism 与 Houdini 分别记忆选择；切换只改变绘制和网格，不会重建 `_thumbs`。
 - Details 左侧显示当前 `Active Location` 的大图预览，并且只读取已有且未过期的 `_thumbs` 缓存；无缓存时不会解码原始 HDR/EXR。
 - 在 Houdini 内嵌的 Project Browser 中右键 HDR/EXR，可直接在当前 Object 或 LOP 网络创建原生 Environment Light 或 Solaris Dome Light；其他网络只提示切换到支持的网络，不再弹出目标选择器。
@@ -201,7 +201,7 @@ Houdini HOM 冒烟测试：
 & "C:\Program Files\Side Effects Software\Houdini 22.0.368\bin\hython.exe" tests\houdini_asset_library_smoke.py
 ```
 
-headless/HOM 测试需要对应 DCC 许可证。最近一次 Prism 2.1.2/2.1.3 / PySide6 环境验证均运行 148 项测试：通过 141 项，跳过 7 项需要额外权限或外部工具的环境型测试；Houdini 20.5.684、21.0.631、22.0.368 的 Asset Library HOM 冒烟测试均已通过。
+headless/HOM 测试需要对应 DCC 许可证。最近一次 Prism 2.1.2/2.1.3 / PySide6 环境验证均运行 150 项测试：通过 143 项，跳过 7 项需要额外权限或外部工具的环境型测试；Houdini 20.5.684、21.0.631、22.0.368 的 Asset Library HOM 冒烟测试均已通过。
 
 ## 进一步文档
 

@@ -238,6 +238,33 @@ def assets_in_directory(assets, source_id, directory):
     ]
 
 
+def assets_in_directories(assets, directories):
+    directory_keys = {
+        (
+            source_id,
+            os.path.normcase(os.path.normpath(directory or "")),
+        )
+        for source_id, directory in directories
+    }
+    selected = []
+    seen_paths = set()
+    for asset in assets:
+        key = (
+            asset.get("source_id"),
+            os.path.normcase(
+                os.path.normpath(asset.get("directory", ""))
+            ),
+        )
+        if key not in directory_keys:
+            continue
+        path_key = source_key(asset.get("path"))
+        if path_key in seen_paths:
+            continue
+        seen_paths.add(path_key)
+        selected.append(asset)
+    return selected
+
+
 def search_assets(assets, query):
     tokens = [
         token.casefold()
