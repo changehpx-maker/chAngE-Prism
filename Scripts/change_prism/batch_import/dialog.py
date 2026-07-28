@@ -319,8 +319,6 @@ class BatchImportDialog(QDialog):
     def _populate_server_projects(self):
         self.project_combo.clear()
         server_root = self.server_root_edit.text().strip()
-        if not os.path.isdir(server_root):
-            return
         try:
             entries = sorted(
                 os.scandir(server_root),
@@ -332,11 +330,7 @@ class BatchImportDialog(QDialog):
             if entry.name.startswith("."):
                 continue
             try:
-                if entry.is_dir() and os.path.isdir(
-                    os.path.join(
-                        entry.path, "publish", "shot"
-                    )
-                ):
+                if entry.is_dir():
                     self.project_combo.addItem(entry.name)
             except OSError:
                 continue

@@ -317,21 +317,34 @@ class PDGProcessor(object):
 
     @staticmethod
     def _build_xml_data(shot_data):
+        xml_data = {}
         animation = shot_data.get("steps", {}).get(
             ANIMATION_LABEL, {}
         )
         animation_xml = animation.get("xml", {})
-        if not animation_xml:
-            return {}
-        attributes = animation_xml.get("attributes", {})
-        return {
-            "path": animation_xml.get("path", ""),
-            "attributes": {
+        if animation_xml:
+            attributes = animation_xml.get("attributes", {})
+            xml_data["path"] = animation_xml.get("path", "")
+            xml_data["attributes"] = {
                 key: attributes[key]
                 for key in PDG_FRAME_ATTRIBUTE_KEYS
                 if key in attributes
-            },
-        }
+            }
+
+        for label, key in (
+            ("Cloth", "cloth_solution"),
+            ("Hair", "hair_solution"),
+        ):
+            solution_xml = (
+                shot_data.get("steps", {})
+                .get(label, {})
+                .get("xml", {})
+            )
+            xml_path = solution_xml.get("path", "")
+            if xml_path:
+                xml_data[key] = {"xml_path": xml_path}
+
+        return xml_data
 
     def _resolve_products_path(self, entity):
         try:

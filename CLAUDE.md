@@ -87,7 +87,7 @@ change_prism/
 - 同 sequence 的 `getShots()` 结果按批次缓存；新建镜头后同步更新缓存。
 - Review MOV 通过 Prism media API 导入；同名文件必须避免覆盖。
 - PDG 模块保持懒加载，只在用户启用且存在成功 FBX 数据时启动一次后台 Hython。
-- PDG JSON 只包含 FBX、帧范围和 Animation XML 的必要 metadata；不再传递 Cloth/Hair XML 或 elements。
+- PDG JSON 只包含 FBX、帧范围和 Animation XML 的必要 metadata；Cloth/Hair 仅传递 XML 路径，不传递 attributes 或 elements。
 
 其余扫描格式、三种导入模式、`published_ref` 和 PDG JSON 结构以 [Batch Import.md](Batch%20Import.md) 为准。
 

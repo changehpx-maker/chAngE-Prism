@@ -149,6 +149,34 @@ class BatchImportDialogTests(unittest.TestCase):
                 dialog.close()
         app.processEvents()
 
+    def test_open_only_lists_first_level_project_directories(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ProjectB").mkdir()
+            (root / "ProjectA").mkdir()
+            (root / ".hidden").mkdir()
+            (root / "readme.txt").write_text("", encoding="utf-8")
+
+            with mock.patch(
+                "change_prism.batch_import.dialog.os.path.isdir",
+                side_effect=AssertionError(
+                    "Opening Batch Import must not inspect project contents"
+                ),
+            ):
+                dialog = BatchImportDialog(
+                    object(), str(root), lambda _data: None
+                )
+            try:
+                projects = [
+                    dialog.project_combo.itemText(index)
+                    for index in range(dialog.project_combo.count())
+                ]
+                self.assertEqual(projects, ["ProjectA", "ProjectB"])
+            finally:
+                dialog.close()
+        app.processEvents()
+
     def test_async_import_copies_files_without_blocking_prism_phase(self):
         app = QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as tmp:

@@ -79,6 +79,15 @@ class PDGProcessorTests(unittest.TestCase):
                             },
                         },
                     },
+                    "Hair": {
+                        "abc": ["D:/source/hair.abc"],
+                        "xml": {
+                            "path": "D:/source/hair.xml",
+                            "attributes": {
+                                "elements": ["hair_main"],
+                            },
+                        },
+                    },
                 },
             }
         ]
@@ -100,9 +109,42 @@ class PDGProcessorTests(unittest.TestCase):
             {
                 "path": "D:/source/animation/xml/description.xml",
                 "attributes": {"sequence_frame": 100},
+                "cloth_solution": {
+                    "xml_path": "D:/source/cloth.xml",
+                },
+                "hair_solution": {
+                    "xml_path": "D:/source/hair.xml",
+                },
             },
         )
-        self.assertNotIn("cloth_solution", shot["xml"])
+
+    def test_pdg_json_keeps_solution_xml_without_animation_xml(self):
+        data = [
+            {
+                "episode": "EP01",
+                "sequence": "SC01",
+                "shot": "shot001",
+                "steps": {
+                    "Animation": {
+                        "fbx": ["D:/source/animation/fbx/camera.fbx"],
+                    },
+                    "Cloth": {
+                        "xml": {"path": "D:/source/cloth.xml"},
+                    },
+                },
+            }
+        ]
+
+        result = PDGProcessor(_Core())._build_pdg_json(data)
+
+        self.assertEqual(
+            result["EP01/SC01/shot001"]["xml"],
+            {
+                "cloth_solution": {
+                    "xml_path": "D:/source/cloth.xml",
+                }
+            },
+        )
 
     def test_runtime_paths_come_from_prism_and_settings(self):
         with tempfile.TemporaryDirectory() as directory:

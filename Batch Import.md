@@ -90,9 +90,10 @@ shot001
 
 勾选 `Run PDG FBX Convert` 后，Batch Import 完成时：
 
-1. 只把成功镜头中的 FBX、帧范围和 Animation XML 的必要 metadata 写到
+1. 只把成功镜头中的 FBX、帧范围、Animation XML 的必要 metadata，以及存在时的 Cloth/Hair XML 路径写到
    独立的
    `%TEMP%\chAngE_Prism\batch_import\pdg\json\change_prism_pdg_<随机>\shot_data.json`。
+   Cloth/Hair 只写入 `xml_path`，Houdini PDG 分别生成 `cloth_xml` 和 `hair_xml` 属性。
 2. 从 Prism 当前 Houdini executable override 的同目录推导 `hython.exe`。
 3. 从该 Houdini 安装目录推导 `houdini/python*libs/pdgjob/topcook.py`。
 4. 后台启动一次 `hython -u topcook.py --hip ... --toppath /obj/topnet`。

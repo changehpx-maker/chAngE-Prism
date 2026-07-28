@@ -80,7 +80,17 @@ def main():
                                 "render_start_frame": 1001,
                                 "sequence_frame": 100,
                                 "average_translation": [1, 2, 3],
-                            }
+                            },
+                            "cloth_solution": {
+                                "xml_path": os.path.join(
+                                    temporary_root, "cloth.xml"
+                                ),
+                            },
+                            "hair_solution": {
+                                "xml_path": os.path.join(
+                                    temporary_root, "hair.xml"
+                                ),
+                            },
                         },
                     }
                 },
@@ -96,6 +106,12 @@ def main():
         assert attributes["project_code"] == "show"
         assert attributes["products_path"] == temporary_root
         assert attributes["end_frame"] == 1102
+        assert attributes["cloth_xml"] == os.path.join(
+            temporary_root, "cloth.xml"
+        )
+        assert attributes["hair_xml"] == os.path.join(
+            temporary_root, "hair.xml"
+        )
         removed_attributes = {
             "avg_trans_x",
             "avg_trans_y",
@@ -110,10 +126,23 @@ def main():
             "type",
         }
         assert removed_attributes.isdisjoint(attributes)
-        assert "hair_xml" not in attributes
-        assert "cloth_xml" not in attributes
         assert "hair_elements" not in attributes
         assert "cloth_elements" not in attributes
+
+        with open(json_path, "r", encoding="utf-8") as handle:
+            without_solutions = json.load(handle)
+        solution_xml = without_solutions["EP01/SC03/shot027"]["xml"]
+        solution_xml.pop("cloth_solution")
+        solution_xml.pop("hair_solution")
+        with open(json_path, "w", encoding="utf-8") as handle:
+            json.dump(without_solutions, handle)
+        holder_without_solutions = _ItemHolder()
+        shot_processo.cook_file_work(holder_without_solutions)
+        attributes_without_solutions = (
+            holder_without_solutions.items[0].attributes
+        )
+        assert "cloth_xml" not in attributes_without_solutions
+        assert "hair_xml" not in attributes_without_solutions
 
         hou.putenv(
             "SHOT_BUILDER_PDG_JSON",
