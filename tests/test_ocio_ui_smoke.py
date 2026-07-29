@@ -90,6 +90,10 @@ class DialogSmokeTests(unittest.TestCase):
         self.assertIn("openPBShotContextMenu", core.callbacks.names)
         self.assertIn("openPBFileContextMenu", core.callbacks.names)
         self.assertIn("mediaPlayerContextMenuRequested", core.callbacks.names)
+        self.assertIn(
+            "productSelectorContextMenuRequested",
+            core.callbacks.names,
+        )
         self.assertIn("userSettings_loadUI", core.callbacks.names)
         self.assertIn("userSettings_loadSettings", core.callbacks.names)
         self.assertIn("userSettings_saveSettings", core.callbacks.names)

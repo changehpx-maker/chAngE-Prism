@@ -61,6 +61,44 @@ class _MediaPlayer:
         return [{"path": self.path}]
 
 
+class _Index:
+    def __init__(self, value):
+        self.value = value
+
+    def data(self):
+        return self.value
+
+
+class _Model:
+    def __init__(self, paths):
+        self.paths = paths
+
+    def columnCount(self):
+        return 2
+
+    def index(self, row, column):
+        return _Index(self.paths[row] if column == 1 else "v0001")
+
+
+class _VersionsView:
+    def __init__(self, paths):
+        self._model = _Model(paths)
+
+    def rowAt(self, y):
+        return y
+
+    def model(self):
+        return self._model
+
+
+class _Position:
+    def __init__(self, row):
+        self.row = row
+
+    def y(self):
+        return self.row
+
+
 class ReviewCopyControllerTests(unittest.TestCase):
     def test_file_menu_is_added_for_existing_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -110,6 +148,50 @@ class ReviewCopyControllerTests(unittest.TestCase):
                 controller.ReviewCopyController._get_media_selection(player),
                 [path],
             )
+
+    def test_product_version_menu_uses_selected_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "model.abc")
+            Path(path).touch()
+            versions = _VersionsView([path])
+            origin = mock.Mock(tw_versions=versions)
+            menu = _Menu()
+
+            controller.ReviewCopyController(_Core()).add_product_context_menu(
+                origin, versions, _Position(0), menu
+            )
+
+            self.assertEqual(
+                [action.text for action in menu.actions],
+                [controller.MENU_LABEL],
+            )
+
+    def test_product_sequence_uses_whole_version_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = os.path.join(tmp, "cache.1001.bgeo.sc")
+            Path(first).touch()
+            Path(tmp, "cache.1002.bgeo.sc").touch()
+            versions = _VersionsView([first])
+            origin = mock.Mock(tw_versions=versions)
+
+            self.assertEqual(
+                controller.ReviewCopyController._get_product_selection(
+                    origin, versions, _Position(0)
+                ),
+                [tmp],
+            )
+
+    def test_product_identifier_menu_is_not_modified(self):
+        versions = _VersionsView([])
+        origin = mock.Mock(tw_versions=versions)
+        identifier_view = object()
+        menu = _Menu()
+
+        controller.ReviewCopyController(_Core()).add_product_context_menu(
+            origin, identifier_view, _Position(0), menu
+        )
+
+        self.assertFalse(menu.actions)
 
     def test_action_calls_service_and_shows_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
