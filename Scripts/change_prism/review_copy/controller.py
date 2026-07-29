@@ -1,4 +1,5 @@
 import os
+import re
 
 from change_prism.config import (
     SETTINGS_LOCATION,
@@ -18,6 +19,10 @@ class ReviewCopyController:
 
     def add_media_context_menu(self, origin, menu):
         paths = self._get_media_selection(origin)
+        self._add_copy_action(menu, paths)
+
+    def add_product_context_menu(self, origin, view_ui, pos, menu):
+        paths = self._get_product_selection(origin, view_ui, pos)
         self._add_copy_action(menu, paths)
 
     def _add_copy_action(self, menu, paths):
@@ -143,6 +148,61 @@ class ReviewCopyController:
                 paths.append(path)
 
         return cls._existing_paths(paths)
+
+    @classmethod
+    def _get_product_selection(cls, origin, view_ui, pos):
+        if view_ui is not getattr(origin, "tw_versions", None):
+            return []
+
+        try:
+            row = view_ui.rowAt(pos.y())
+            if row < 0:
+                return []
+
+            model = view_ui.model()
+            path_column = model.columnCount() - 1
+            path = model.index(row, path_column).data()
+        except Exception:
+            return []
+
+        paths = cls._existing_paths([path])
+        if not paths:
+            return []
+
+        return [cls._product_copy_source(paths[0])]
+
+    @staticmethod
+    def _product_copy_source(path):
+        if not os.path.isfile(path):
+            return path
+
+        filename = os.path.basename(path)
+        match = re.match(
+            r"^(?P<prefix>.*[._-])(?P<frame>\d+)"
+            r"(?P<suffix>(?:\.[^.]+)+)$",
+            filename,
+        )
+        if not match:
+            return path
+
+        sequence_pattern = re.compile(
+            r"^%s\d{%d}%s$"
+            % (
+                re.escape(match.group("prefix")),
+                len(match.group("frame")),
+                re.escape(match.group("suffix")),
+            ),
+            re.IGNORECASE,
+        )
+        directory = os.path.dirname(path)
+        try:
+            matches = sum(
+                1 for name in os.listdir(directory)
+                if sequence_pattern.match(name)
+            )
+        except OSError:
+            return path
+        return directory if matches > 1 else path
 
     @staticmethod
     def _existing_paths(paths):
