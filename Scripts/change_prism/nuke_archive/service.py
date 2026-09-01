@@ -48,10 +48,6 @@ def find_shot_root(source_nk):
     return archive_core.find_shot_root(source_nk)
 
 
-def get_next_archive_version(archive_root):
-    return archive_core.get_next_archive_version(archive_root)
-
-
 def scan_archive_versions(archive_root):
     versions = []
     for archive in archive_core.scan_archive_versions(archive_root):
@@ -736,71 +732,6 @@ def _file_fingerprint(path):
     }
 
 
-def _get_archive_health_status(
-    version_path,
-    packaged_nk,
-    manifest,
-    manifest_valid,
-    is_incomplete,
-):
-    if is_incomplete or not os.path.isfile(
-        os.path.join(version_path, "manifest.json")
-    ):
-        return "Incomplete"
-    if not manifest_valid:
-        return "Invalid Manifest"
-    if manifest.get("status") not in (None, "", "Complete"):
-        return "Incomplete"
-    if not packaged_nk or not os.path.isfile(packaged_nk):
-        return "Missing Files"
-
-    sequences_root = os.path.join(version_path, "sequences")
-    for job in manifest.get("copy_jobs", []):
-        material_folder = job.get("material_folder", "")
-        if not material_folder:
-            return "Missing Files"
-        destination = os.path.join(sequences_root, material_folder)
-        if not os.path.isdir(destination):
-            return "Missing Files"
-        if job.get("kind") == "file":
-            source_name = os.path.basename(job.get("source", ""))
-            if not source_name or not os.path.isfile(
-                os.path.join(destination, source_name)
-            ):
-                return "Missing Files"
-
-    source_nk = manifest.get("source_nk", "")
-    if source_nk and not os.path.isfile(source_nk):
-        return "Source Changed"
-    recorded_stat = manifest.get("source_nk_stat")
-    if recorded_stat and _file_fingerprint(source_nk) != recorded_stat:
-        return "Source Changed"
-    return "Complete"
-
-
-def _is_manifest_valid(manifest):
-    if not isinstance(manifest, dict):
-        return False
-    if not isinstance(manifest.get("reads", []), list):
-        return False
-    if not isinstance(manifest.get("copy_jobs", []), list):
-        return False
-    if not isinstance(manifest.get("summary", {}), dict):
-        return False
-    if not all(
-        isinstance(item, dict) for item in manifest.get("reads", [])
-    ):
-        return False
-    if not all(
-        isinstance(item, dict) for item in manifest.get("copy_jobs", [])
-    ):
-        return False
-    for key in ("source_nk", "packaged_nk", "status"):
-        if key in manifest and not isinstance(manifest[key], str):
-            return False
-    return True
-
-
 def _allocate_material_folder(base, used_names, source_key):
     candidate = base
     suffix = 2
@@ -871,10 +802,6 @@ def _encode_knob_value(value):
     return value
 
 
-def _reserve_version_directory(archive_root):
-    return archive_core.reserve_version_directory(archive_root)
-
-
 def _copy_directory(source, destination, is_cancelled):
     os.makedirs(destination)
     for current, directory_names, file_names in os.walk(source):
@@ -935,10 +862,3 @@ def _to_nuke_path(path):
     return path.replace("\\", "/")
 
 
-def _first_nuke_file(directory):
-    if not os.path.isdir(directory):
-        return ""
-    for name in sorted(os.listdir(directory)):
-        if name.lower().endswith(".nk"):
-            return os.path.join(directory, name)
-    return ""
