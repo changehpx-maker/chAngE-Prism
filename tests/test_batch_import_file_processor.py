@@ -246,14 +246,15 @@ class FileProcessorTests(unittest.TestCase):
             empty_version = root / "empty_review" / "v0001"
             empty_version.mkdir(parents=True)
             with self.assertRaises(FileNotFoundError):
+                # The cleanup directory is derived internally from the
+                # destinations; the dialog worker relies on this too.
                 processor.execute_review_copies(
                     [
                         (
                             str(missing),
                             str(empty_version / "review.mov"),
                         )
-                    ],
-                    cleanup_directory=str(empty_version),
+                    ]
                 )
             self.assertFalse(empty_version.exists())
 
