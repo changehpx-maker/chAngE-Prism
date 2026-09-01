@@ -587,8 +587,14 @@ class BatchImportDialog(QDialog):
         failures=None,
         summary=None,
     ):
-        self._set_busy(False, "")
         summary = summary or {}
+        pdg_status = (
+            "PDG FBX Convert is running in the background. "
+            "You will be notified when it finishes."
+            if summary.get("pdg_started")
+            else ""
+        )
+        self._set_busy(False, pdg_status)
         lines = [
             "Import Complete",
             "",
@@ -613,6 +619,11 @@ class BatchImportDialog(QDialog):
                 modes.append("PDG FBX Convert")
         if modes:
             lines.append("Mode: %s" % " + ".join(modes))
+        if summary.get("pdg_started"):
+            lines.append(
+                "PDG: Running in the background. "
+                "A completion notification will appear."
+            )
         if summary.get("failure_report"):
             lines.append(
                 "Report: %s" % summary["failure_report"]

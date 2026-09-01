@@ -114,7 +114,7 @@ Prism 用户设置。旧版根目录 `config.json` 不再参与运行，可在�
 - `Create shot only` 仅创建或更新 Prism 镜头、Fx/Effects 等部门与任务、预设场景和帧范围；Shotinfo 不写入镜头 metadata。
 - 默认模式保留服务器源文件路径，在 `published_ref/v####` 写入标准化 `versioninfo.json`；`Copy to local` 会先复制三个发布 step，再让记录和 PDG 指向本地版本。
 - Review MOV 进入 Prism `playblasts` 类型的 `review` media 版本；不同 step 的同名 MOV 会保留并自动加 step 前缀。
-- `Run PDG FBX Convert` 只把成功镜头中的 FBX、帧范围、Animation XML 的必要 metadata，以及存在时的 Cloth/Hair XML 路径写入独立的 `%TEMP%\chAngE_Prism\batch_import\pdg\json\change_prism_pdg_<随机>\shot_data.json`，并在导入完成后后台启动一次 `hython + topcook.py`。JSON 路径通过 `SHOT_BUILDER_PDG_JSON` 传入，Hython 结束后保留以便排查；结束弹窗会给出 JSON、stdout 和 stderr 路径。
+- `Run PDG FBX Convert` 只把成功镜头中的 FBX、帧范围、Animation XML 的必要 metadata，以及存在时的 Cloth/Hair XML 路径写入独立的 `%TEMP%\chAngE_Prism\batch_import\pdg\json\change_prism_pdg_<随机>\shot_data.json`，并在导入完成后后台启动一次 `hython + topcook.py`。JSON 路径通过 `SHOT_BUILDER_PDG_JSON` 传入，Hython 结束后保留以便排查；导入摘要会提示 PDG 正在后台运行，结束后由 Qt 主线程弹窗给出耗时、JSON、stdout 和 stderr 路径。
 - Hython 始终来自 Prism 当前 Houdini executable override；`topcook.py` 从同一 Houdini 安装目录推导，不再保存 `hython_path` 或 `topcook_path`。
 - PDG 明确设置 `SHOT_BUILDER_PDG_JSON` 和 Settings 中的 `HOUDINI_PACKAGE_DIR`，不再要求系统预先配置 `PIPELINE_ROOT`。
 
@@ -176,6 +176,7 @@ Prism 用户设置。旧版根目录 `config.json` 不再参与运行，可在�
 - 目标固定为 `<review_copy.destination_root>/YYYY-MM-DD/`。
 - 同名文件覆盖；同名目录合并并覆盖冲突文件，不删除目标中额外文件。
 - 批量复制会收集失败项并在结束时统一显示。
+- 复制在后台执行，不弹出进度窗口；结束后显示非阻塞结果提示。
 
 ## 测试
 

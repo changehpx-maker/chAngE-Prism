@@ -115,9 +115,13 @@ class _ImportCore:
         self.mediaProducts = _MediaProducts()
         self.username = "tester"
         self.user = "tester"
+        self.popups = []
 
     def saveVersionInfo(self, filepath=None, details=None):
         del filepath, details
+
+    def popup(self, message, severity=None, **_kwargs):
+        self.popups.append((message, severity))
 
 
 @unittest.skipUnless(QApplication, "Requires Prism Qt runtime")
@@ -341,6 +345,35 @@ class BatchImportDialogTests(unittest.TestCase):
                 finished[0]["error"],
             )
             self.assertIsNone(controller._import_state)
+        app.processEvents()
+
+    def test_finished_summary_marks_pdg_as_running(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            core = _ImportCore(str(Path(tmp) / "products"))
+            dialog = BatchImportDialog(core, tmp, lambda _data: None)
+            try:
+                dialog.on_create_finished(
+                    1,
+                    0,
+                    summary={
+                        "project": "show",
+                        "total": 1,
+                        "pdg_enabled": True,
+                        "pdg_started": True,
+                    },
+                )
+
+                self.assertIn(
+                    "running in the background",
+                    dialog.status_label.text(),
+                )
+                self.assertIn(
+                    "A completion notification will appear.",
+                    core.popups[-1][0],
+                )
+            finally:
+                dialog.close()
         app.processEvents()
 
 

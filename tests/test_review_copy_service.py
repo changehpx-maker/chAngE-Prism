@@ -66,6 +66,63 @@ class ReviewCopyServiceTests(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(target, "keep.txt")))
             self.assertFalse(result["failures"])
 
+    def test_product_sequence_file_copies_whole_version_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version = os.path.join(tmp, "source", "v0001")
+            destination_root = os.path.join(tmp, "review")
+            os.makedirs(version)
+            first = os.path.join(version, "cache.1001.bgeo.sc")
+            second = os.path.join(version, "cache.1002.bgeo.sc")
+            Path(first).write_text("1001", encoding="utf-8")
+            Path(second).write_text("1002", encoding="utf-8")
+
+            result = service.copy_items(
+                [{"path": first, "detect_product_sequence": True}],
+                destination_root,
+                datetime.date(2026, 7, 23),
+            )
+
+            target = os.path.join(result["destination"], "v0001")
+            self.assertTrue(os.path.isfile(os.path.join(target, os.path.basename(first))))
+            self.assertTrue(os.path.isfile(os.path.join(target, os.path.basename(second))))
+            self.assertEqual(result["copied"], [version])
+
+    def test_rejects_destination_nested_inside_source_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = os.path.join(tmp, "source")
+            destination_root = os.path.join(source, "daily")
+            os.makedirs(source)
+            Path(source, "cache.1001.bgeo.sc").touch()
+
+            result = service.copy_items(
+                [source],
+                destination_root,
+                datetime.date(2026, 7, 23),
+            )
+
+            self.assertFalse(result["copied"])
+            self.assertEqual(len(result["failures"]), 1)
+            self.assertIn("inside the source", result["failures"][0]["error"])
+            self.assertFalse(os.path.exists(destination_root))
+
+    def test_single_numbered_product_file_stays_a_file_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            version = os.path.join(tmp, "source", "v0001")
+            destination_root = os.path.join(tmp, "review")
+            os.makedirs(version)
+            source = os.path.join(version, "cache.1001.bgeo.sc")
+            Path(source).write_text("single", encoding="utf-8")
+
+            result = service.copy_items(
+                [{"path": source, "detect_product_sequence": True}],
+                destination_root,
+                datetime.date(2026, 7, 23),
+            )
+
+            target = os.path.join(result["destination"], os.path.basename(source))
+            self.assertTrue(os.path.isfile(target))
+            self.assertEqual(result["copied"], [source])
+
     def test_partial_failure_is_collected(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = os.path.join(tmp, "review.mov")

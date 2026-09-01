@@ -11,6 +11,7 @@ class ReviewCopyController:
     def __init__(self, core):
         self.core = core
         self._copy_job = None
+        self._result_popup = None
 
     def add_file_context_menu(self, origin, menu, filepath):
         paths = self._existing_paths([filepath])
@@ -18,6 +19,10 @@ class ReviewCopyController:
 
     def add_media_context_menu(self, origin, menu):
         paths = self._get_media_selection(origin)
+        self._add_copy_action(menu, paths)
+
+    def add_product_context_menu(self, origin, view_ui, pos, menu):
+        paths = self._get_product_selection(origin, view_ui, pos)
         self._add_copy_action(menu, paths)
 
     def _add_copy_action(self, menu, paths):
@@ -51,11 +56,9 @@ class ReviewCopyController:
     def _start_copy_job(self, paths, destination_root):
         from change_prism.review_copy.dialog import create_copy_job
 
-        parent = getattr(self.core, "messageParent", None)
         self._copy_job = create_copy_job(
             paths,
             destination_root,
-            parent,
             self._copy_finished,
             self._copy_failed,
         )
@@ -76,32 +79,52 @@ class ReviewCopyController:
                     )
 
             severity = "warning" if result["failures"] else "info"
-            self.core.popup(message, severity=severity)
+            self._show_result_popup(message, severity=severity)
         except Exception as exc:
-            self.core.popup(
+            self._show_result_popup(
                 "Could not summarize the daily review copy:\n%s" % exc,
                 severity="warning",
             )
 
     def _copy_failed(self, message):
         self._close_copy_job()
-        self.core.popup(
+        self._show_result_popup(
             "Could not create the daily review folder:\n%s" % message,
             severity="warning",
         )
+
+    def _show_result_popup(self, message, severity):
+        previous = self._result_popup
+        self._result_popup = None
+        if previous is not None:
+            try:
+                previous.close()
+                previous.deleteLater()
+            except RuntimeError:
+                pass
+
+        parent = getattr(self.core, "pb", None)
+        if parent is not None:
+            try:
+                if not parent.isVisible():
+                    parent = None
+            except RuntimeError:
+                parent = None
+        if parent is None:
+            parent = getattr(self.core, "messageParent", None)
+
+        # Keep the nonmodal result alive even when Prism has no parent window.
+        self._result_popup = self.core.popup(
+            message, severity=severity, parent=parent, modal=False
+        )
+        if self._result_popup is not None:
+            self._result_popup.raise_()
 
     def _close_copy_job(self):
         job = self._copy_job
         self._copy_job = None
         if not job:
             return
-
-        progress = job.get("progress")
-        if progress is not None:
-            try:
-                progress.close()
-            except RuntimeError:
-                pass
 
         bridge = job.get("bridge")
         if bridge is not None:
@@ -143,6 +166,31 @@ class ReviewCopyController:
                 paths.append(path)
 
         return cls._existing_paths(paths)
+
+    @classmethod
+    def _get_product_selection(cls, origin, view_ui, pos):
+        if view_ui is not getattr(origin, "tw_versions", None):
+            return []
+
+        try:
+            row = view_ui.rowAt(pos.y())
+            if row < 0:
+                return []
+
+            model = view_ui.model()
+            path_column = model.columnCount() - 1
+            path = model.index(row, path_column).data()
+        except Exception:
+            return []
+
+        if not path:
+            return []
+
+        try:
+            path = os.path.normpath(os.fspath(path))
+        except TypeError:
+            return []
+        return [{"path": path, "detect_product_sequence": True}]
 
     @staticmethod
     def _existing_paths(paths):

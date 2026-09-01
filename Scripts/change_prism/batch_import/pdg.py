@@ -6,7 +6,7 @@ import sys
 import tempfile
 import time
 
-from qtpy.QtCore import QThread, Signal
+from qtpy.QtCore import QObject, Qt, QThread, Signal, Slot
 
 from change_prism.batch_import.file_processor import FileProcessor
 from change_prism.batch_import.scanner import STEP_LABELS
@@ -74,12 +74,14 @@ class _PDGMonitor(QThread):
         )
 
 
-class PDGProcessor(object):
+class PDGProcessor(QObject):
     def __init__(self, core):
+        super(PDGProcessor, self).__init__()
         self.core = core
         self._pdg_process = None
         self._pdg_monitor = None
         self._json_path = ""
+        self._started_at = None
 
     def is_running(self):
         return (
@@ -177,6 +179,7 @@ class PDGProcessor(object):
                 stdout_file.close()
                 stderr_file.close()
                 raise
+            self._started_at = time.monotonic()
 
             self._pdg_monitor = _PDGMonitor(
                 self._pdg_process,
@@ -186,25 +189,15 @@ class PDGProcessor(object):
                 stderr_path,
             )
             self._pdg_monitor.finished_signal.connect(
-                self._on_pdg_finished
+                self._on_pdg_finished,
+                Qt.QueuedConnection,
             )
             self._pdg_monitor.start()
-            self.core.popup(
-                "%s started in the background.\n\nPID: %s\n"
-                "stdout: %s\nstderr: %s\nshot data: %s"
-                % (
-                    PDG_MODE_LABEL,
-                    self._pdg_process.pid,
-                    stdout_path,
-                    stderr_path,
-                    self._json_path,
-                ),
-                severity="info",
-            )
             return True
         except Exception as exc:
             if not self.is_running():
                 self._cleanup_pdg_json()
+                self._started_at = None
             self.core.popup(
                 "%s could not start:\n\n%s\n\nConfigure paths in %s."
                 % (PDG_MODE_LABEL, exc, SETTINGS_LOCATION),
@@ -212,11 +205,17 @@ class PDGProcessor(object):
             )
             return False
 
+    @Slot(int, int, str, str)
     def _on_pdg_finished(
         self, pid, return_code, stdout_path="", stderr_path=""
     ):
         json_path = self._json_path
         self._json_path = ""
+        elapsed = self._format_elapsed(
+            time.monotonic() - self._started_at
+            if self._started_at is not None
+            else 0
+        )
         stderr_has_errors = self._stderr_has_errors(stderr_path)
         failed = return_code != 0 or stderr_has_errors
         status = "failed" if failed else "completed"
@@ -227,12 +226,17 @@ class PDGProcessor(object):
             else ""
         )
         try:
+            popup_kwargs = {"severity": severity}
+            parent = getattr(self.core, "messageParent", None)
+            if parent is not None:
+                popup_kwargs["parent"] = parent
             self.core.popup(
-                "%s %s.\n\nPID: %s\nExit code: %s%s\n"
+                "%s %s.\n\nElapsed: %s\nPID: %s\nExit code: %s%s\n"
                 "stdout: %s\nstderr: %s\nshot data: %s"
                 % (
                     PDG_MODE_LABEL,
                     status,
+                    elapsed,
                     pid,
                     return_code,
                     error_note,
@@ -240,11 +244,21 @@ class PDGProcessor(object):
                     stderr_path,
                     json_path,
                 ),
-                severity=severity,
+                **popup_kwargs
             )
         finally:
             self._pdg_monitor = None
             self._pdg_process = None
+            self._started_at = None
+
+    @staticmethod
+    def _format_elapsed(seconds):
+        total_seconds = max(0, int(round(float(seconds or 0))))
+        minutes, seconds = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return "%d:%02d:%02d" % (hours, minutes, seconds)
+        return "%02d:%02d" % (minutes, seconds)
 
     @staticmethod
     def _stderr_has_errors(stderr_path):

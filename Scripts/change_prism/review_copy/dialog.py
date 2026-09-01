@@ -1,5 +1,4 @@
 from qtpy.QtCore import QObject, QThread, Signal, Slot
-from qtpy.QtWidgets import QProgressDialog
 
 from .service import copy_items
 
@@ -46,14 +45,7 @@ class CopyUiBridge(QObject):
         self._on_failed(message)
 
 
-def create_copy_job(sources, destination, parent, on_finished, on_failed):
-    progress = QProgressDialog("Copying review files...", "", 0, 0, parent)
-    progress.setWindowTitle("Copy Review Files")
-    progress.setCancelButton(None)
-    progress.setMinimumDuration(0)
-    progress.setAutoClose(False)
-    progress.setAutoReset(False)
-
+def create_copy_job(sources, destination, on_finished, on_failed):
     thread = QThread()
     worker = CopyWorker(sources, destination)
     bridge = CopyUiBridge(on_finished, on_failed)
@@ -71,11 +63,9 @@ def create_copy_job(sources, destination, parent, on_finished, on_failed):
         lambda current=thread: _release_thread(current)
     )
 
-    progress.show()
     thread.start()
     return {
         "thread": thread,
         "worker": worker,
         "bridge": bridge,
-        "progress": progress,
     }

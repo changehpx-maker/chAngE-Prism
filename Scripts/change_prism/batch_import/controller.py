@@ -430,6 +430,7 @@ class BatchImportController(object):
         if summary.get("pdg_enabled") and shot_data_list:
             from change_prism.batch_import.pdg import PDGProcessor
 
+            summary["pdg_started"] = False
             if (
                 self._pdg_processor is not None
                 and self._pdg_processor.is_running()
@@ -443,7 +444,7 @@ class BatchImportController(object):
             else:
                 dialog.set_status("Launching PDG FBX Convert...")
                 self._pdg_processor = PDGProcessor(self.core)
-                self._pdg_processor.run(
+                summary["pdg_started"] = self._pdg_processor.run(
                     shot_data_list, summary.get("project", "")
                 )
 

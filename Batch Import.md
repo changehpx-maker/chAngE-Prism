@@ -97,7 +97,8 @@ shot001
 2. 从 Prism 当前 Houdini executable override 的同目录推导 `hython.exe`。
 3. 从该 Houdini 安装目录推导 `houdini/python*libs/pdgjob/topcook.py`。
 4. 后台启动一次 `hython -u topcook.py --hip ... --toppath /obj/topnet`。
-5. 完成后弹窗显示退出码及 stdout/stderr 日志。
+5. Batch Import 完成摘要和状态栏提示 PDG 正在后台运行，不显示虚假的百分比进度。
+6. 完成信号回到 Qt 主线程后弹窗提示成功或失败，并显示耗时、退出码及 stdout/stderr 日志。
 
 Hython 和 topcook 不保存为插件配置。运行前在 Prism 中配置：
 

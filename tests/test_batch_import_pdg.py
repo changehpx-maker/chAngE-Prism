@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -9,10 +10,15 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "Scripts"))
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
+    from qtpy.QtCore import QThread
+    from qtpy.QtWidgets import QApplication
     from change_prism.batch_import.pdg import PDGProcessor
 except Exception:
+    QApplication = None
+    QThread = None
     PDGProcessor = None
 
 
@@ -31,6 +37,9 @@ class _Core:
         self.users = None
         self.projects = None
         self.popups = []
+        self.popup_kwargs = []
+        self.popup_threads = []
+        self.messageParent = object()
 
     def getExecutableOverride(self, _application):
         return self.executable
@@ -41,8 +50,10 @@ class _Core:
             return section
         return section.get(param)
 
-    def popup(self, message, severity=None, **_kwargs):
+    def popup(self, message, severity=None, **kwargs):
         self.popups.append((message, severity))
+        self.popup_kwargs.append(kwargs)
+        self.popup_threads.append(QThread.currentThread())
 
 
 @unittest.skipUnless(PDGProcessor, "Requires Prism Qt runtime")
@@ -229,9 +240,13 @@ class PDGProcessorTests(unittest.TestCase):
             )
             core = _Core()
             processor = PDGProcessor(core)
+            processor._started_at = 100
             with mock.patch(
                 "change_prism.batch_import.service.tempfile.gettempdir",
                 return_value=directory,
+            ), mock.patch(
+                "change_prism.batch_import.pdg.time.monotonic",
+                return_value=225,
             ):
                 json_path = Path(
                     processor._write_pdg_json({"run": "failed"})
@@ -247,9 +262,77 @@ class PDGProcessorTests(unittest.TestCase):
             self.assertIn(
                 "Detected error output", core.popups[-1][0]
             )
+            self.assertIn("Elapsed: 02:05", core.popups[-1][0])
             self.assertIn(str(json_path), core.popups[-1][0])
+            self.assertIs(
+                core.popup_kwargs[-1]["parent"],
+                core.messageParent,
+            )
             self.assertTrue(json_path.is_file())
             self.assertEqual(processor._json_path, "")
+
+    def test_successful_launch_uses_queued_completion_without_popup(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stdout_path = root / "stdout.log"
+            stderr_path = root / "stderr.log"
+            core = _Core()
+            processor = PDGProcessor(core)
+            process = mock.Mock()
+            process.pid = 123
+            process.poll.return_value = None
+            process.wait.return_value = 0
+
+            with mock.patch.object(
+                processor,
+                "_build_pdg_json",
+                return_value={"EP01/SC01/shot001": {}},
+            ), mock.patch.object(
+                processor, "_resolve_hython", return_value="hython"
+            ), mock.patch.object(
+                processor, "_resolve_hip", return_value="template.hip"
+            ), mock.patch.object(
+                processor, "_resolve_topcook", return_value="topcook.py"
+            ), mock.patch.object(
+                processor,
+                "_resolve_package_directory",
+                return_value="hou_pkgs",
+            ), mock.patch.object(
+                processor, "_validate_runtime"
+            ), mock.patch.object(
+                processor,
+                "_write_pdg_json",
+                return_value=str(root / "shot_data.json"),
+            ), mock.patch.object(
+                processor,
+                "_build_houdini_env",
+                return_value={},
+            ), mock.patch.object(
+                processor,
+                "_make_pdg_log_paths",
+                return_value=(str(stdout_path), str(stderr_path)),
+            ), mock.patch(
+                "change_prism.batch_import.pdg.prune_old_files"
+            ), mock.patch(
+                "change_prism.batch_import.pdg.subprocess.Popen",
+                return_value=process,
+            ):
+                launched = processor.run([], "show")
+
+            self.assertTrue(launched)
+            self.assertEqual(core.popups, [])
+            monitor = processor._pdg_monitor
+            deadline = time.time() + 5
+            while not core.popups and time.time() < deadline:
+                app.processEvents()
+                time.sleep(0.01)
+            monitor.wait(5000)
+            app.processEvents()
+
+            self.assertTrue(core.popups)
+            self.assertIn("completed", core.popups[-1][0])
+            self.assertEqual(core.popup_threads[-1], app.thread())
 
     def test_houdini_environment_uses_settings_not_pipeline_root(self):
         with tempfile.TemporaryDirectory() as directory:
