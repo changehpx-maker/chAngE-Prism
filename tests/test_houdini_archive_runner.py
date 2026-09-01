@@ -68,6 +68,85 @@ class HoudiniArchiveRunnerTests(unittest.TestCase):
                     "20.5.684", explicit_path=str(path)
                 )
 
+    def test_run_worker_times_out_and_terminates_hung_process(self):
+        class _HungProcess:
+            def __init__(self):
+                self.terminated = False
+                self.killed = False
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout=None):
+                return 0
+
+        process = _HungProcess()
+        with mock.patch.object(
+            runner.subprocess, "Popen", return_value=process
+        ):
+            with self.assertRaisesRegex(
+                runner.RunnerTimeout, "did not finish within"
+            ):
+                runner.run_worker(
+                    "hython.exe",
+                    "inspect",
+                    "scene.hip",
+                    timeout_seconds=0.2,
+                )
+        self.assertTrue(process.terminated)
+        self.assertFalse(process.killed)
+
+    def test_run_worker_reports_launch_failure_as_runner_error(self):
+        with mock.patch.object(
+            runner.subprocess,
+            "Popen",
+            side_effect=OSError("no such file"),
+        ):
+            with self.assertRaisesRegex(
+                runner.RunnerError, "Could not start hython"
+            ):
+                runner.run_worker(
+                    "missing_hython.exe", "inspect", "scene.hip"
+                )
+
+    def test_run_worker_zero_timeout_disables_deadline(self):
+        # A zero timeout must disable the deadline entirely: the slow
+        # process stays alive past it and must not be terminated.
+        class _SlowProcess:
+            calls = 0
+
+            def poll(self):
+                _SlowProcess.calls += 1
+                if _SlowProcess.calls > 3:
+                    return 0
+                return None
+
+            def terminate(self):
+                raise AssertionError("should not terminate")
+
+            def kill(self):
+                raise AssertionError("should not kill")
+
+            def wait(self, timeout=None):
+                return 0
+
+        with mock.patch.object(
+            runner.subprocess, "Popen", return_value=_SlowProcess()
+        ):
+            with self.assertRaises(runner.RunnerError):
+                runner.run_worker(
+                    "hython.exe",
+                    "inspect",
+                    "scene.hip",
+                    timeout_seconds=0,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

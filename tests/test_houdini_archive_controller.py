@@ -139,6 +139,164 @@ class HoudiniArchiveControllerTests(unittest.TestCase):
                 "explicit_path", resolve.call_args_list[1].kwargs
             )
 
+    def test_start_package_shows_cancel_dialog_and_wires_cancel(self):
+        import types
+
+        events = []
+
+        class _BroadcastSignal:
+            def __init__(self):
+                self.callbacks = []
+
+            def connect(self, callback):
+                self.callbacks.append(callback)
+
+            def callback(self, *args):
+                for handler in list(self.callbacks):
+                    handler(*args)
+
+        class _FakeThread:
+            started = _BroadcastSignal()
+            finished = _BroadcastSignal()
+
+            def __init__(self, parent=None):
+                self.parent = parent
+
+            def moveToThread(self, worker):
+                pass
+
+            def start(self):
+                events.append("thread-started")
+
+            def quit(self, *args):
+                events.append("thread-quit")
+
+            def deleteLater(self):
+                events.append("thread-deleted")
+
+        class _FakeWorker:
+            finished = _BroadcastSignal()
+            failed = _BroadcastSignal()
+            cancelled = _BroadcastSignal()
+
+            def __init__(self, *args):
+                pass
+
+            def moveToThread(self, thread):
+                pass
+
+            def request_cancel(self):
+                events.append("cancel-requested")
+
+            def run(self):
+                pass
+
+            def deleteLater(self, *args):
+                pass
+
+        class _FakeBridge:
+            def __init__(
+                self,
+                parent,
+                on_finished,
+                on_failed,
+                on_cancelled,
+                on_thread_finished,
+            ):
+                self.parent = parent
+                self.on_finished = on_finished
+                self.on_failed = on_failed
+                self.on_cancelled = on_cancelled
+                self.on_thread_finished = on_thread_finished
+
+            def package_finished(self, result):
+                self.on_finished(result)
+
+            def package_failed(self, message):
+                self.on_failed(message)
+
+            def package_cancelled(self):
+                self.on_cancelled()
+
+            def thread_finished(self):
+                self.on_thread_finished()
+
+            def deleteLater(self):
+                events.append("bridge-deleted")
+
+        class _FakeProgressDialog:
+            canceled = _Signal()
+
+            def __init__(self, parent=None):
+                self.parent = parent
+
+            def show(self):
+                events.append("dialog-shown")
+
+            def close(self):
+                events.append("dialog-closed")
+
+        class Core:
+            def __init__(self):
+                self.popups = []
+
+            def popup(self, message, severity="info"):
+                self.popups.append((severity, message))
+
+        progress_dialog = _FakeProgressDialog()
+        qtpy = types.ModuleType("qtpy")
+        qtcore = types.ModuleType("qtpy.QtCore")
+        qtcore.QThread = _FakeThread
+        qtpy.QtCore = qtcore
+        fake_dialog = types.ModuleType(
+            "change_prism.houdini_archive.dialog"
+        )
+        fake_dialog.BackgroundPackageWorker = _FakeWorker
+        fake_dialog.BackgroundUiBridge = _FakeBridge
+        fake_dialog.create_background_progress_dialog = (
+            lambda parent=None: progress_dialog
+        )
+
+        core = Core()
+        archive = controller.HoudiniArchiveController(core)
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "qtpy": qtpy,
+                "qtpy.QtCore": qtcore,
+                "change_prism.houdini_archive.dialog": fake_dialog,
+            },
+        ):
+            archive._start_package(
+                "scene.hip",
+                r"S:\shot\Archives",
+                "hython.exe",
+                {},
+                None,
+                "source-key",
+            )
+
+        self.assertIn("dialog-shown", events)
+        self.assertIn("thread-started", events)
+        job = archive._active_jobs[0]
+        self.assertIs(job["dialog"], progress_dialog)
+        self.assertIsNone(job["thread"].parent)
+
+        progress_dialog.canceled.callback()
+        self.assertIn("cancel-requested", events)
+
+        _FakeWorker.finished.callback(
+            {"version": "v0001", "version_path": r"S:\shot\Archives\v0001"}
+        )
+        self.assertIn("dialog-closed", events)
+        self.assertEqual(core.popups[0][0], "info")
+
+        job["thread"].finished.callback()
+        self.assertIn("thread-deleted", events)
+        self.assertIn("bridge-deleted", events)
+        self.assertFalse(archive._active_jobs)
+        self.assertFalse(controller.heavy_jobs.is_active("archive_package"))
+
 
 if __name__ == "__main__":
     unittest.main()

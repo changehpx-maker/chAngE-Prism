@@ -57,7 +57,7 @@ class HoudiniArchiveController:
             or heavy_jobs.is_active("archive_package")
         ):
             self.core.popup(
-                "A Houdini Archive job is already running in the "
+                "An Archive packaging job is already running in the "
                 "background.",
                 severity="info",
             )
@@ -149,6 +149,7 @@ class HoudiniArchiveController:
         from change_prism.houdini_archive.dialog import (
             BackgroundPackageWorker,
             BackgroundUiBridge,
+            create_background_progress_dialog,
         )
 
         if heavy_jobs.is_active("archive_package"):
@@ -158,7 +159,8 @@ class HoudiniArchiveController:
             )
             return
 
-        thread = QThread(parent)
+        progress_dialog = create_background_progress_dialog(parent)
+        thread = QThread()
         worker = BackgroundPackageWorker(
             source_hip,
             archive_root,
@@ -171,11 +173,12 @@ class HoudiniArchiveController:
         job = {
             "thread": thread,
             "worker": worker,
+            "dialog": progress_dialog,
             "source_key": source_key,
             "heavy_job_token": token,
         }
         bridge = BackgroundUiBridge(
-            parent,
+            progress_dialog,
             on_finished=lambda result: self._package_finished(job, result),
             on_failed=lambda message: self._package_failed(job, message),
             on_cancelled=lambda: self._package_cancelled(job),
@@ -194,10 +197,15 @@ class HoudiniArchiveController:
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
         worker.cancelled.connect(thread.quit)
+        progress_dialog.canceled.connect(
+            lambda current_worker=worker: current_worker.request_cancel()
+        )
         thread.finished.connect(bridge.thread_finished)
+        progress_dialog.show()
         thread.start()
 
     def _package_finished(self, job, result):
+        job["dialog"].close()
         details = [
             "Created Houdini Archive %s:" % result["version"],
             result["version_path"],
@@ -224,10 +232,12 @@ class HoudiniArchiveController:
         self._refresh_archive()
 
     def _package_failed(self, job, message):
+        job["dialog"].close()
         self.core.popup(message, severity="error")
         self._refresh_archive()
 
     def _package_cancelled(self, job):
+        job["dialog"].close()
         self.core.popup(
             "Houdini Archive packaging was cancelled.",
             severity="info",
