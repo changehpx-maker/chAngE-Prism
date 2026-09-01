@@ -269,19 +269,24 @@ def _material_name(filename):
 
 
 def _allocate_material_folder(category, base, source_key, used_names):
+    # Folder names must not collide case-insensitively: on Windows two
+    # allocations that differ only by case would map to the same
+    # physical directory and silently overwrite each other.
     category_names = used_names.setdefault(category, {})
-    if base not in category_names:
-        category_names[base] = source_key
+    key = os.path.normcase(base)
+    if key not in category_names:
+        category_names[key] = source_key
         return base
-    if category_names[base] == source_key:
+    if category_names[key] == source_key:
         return base
     suffix = 2
     while True:
         candidate = "%s_%d" % (base, suffix)
-        if candidate not in category_names:
-            category_names[candidate] = source_key
+        key = os.path.normcase(candidate)
+        if key not in category_names:
+            category_names[key] = source_key
             return candidate
-        if category_names[candidate] == source_key:
+        if category_names[key] == source_key:
             return candidate
         suffix += 1
 

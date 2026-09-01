@@ -565,6 +565,44 @@ class HoudiniArchiveServiceTests(unittest.TestCase):
                 plan["dependencies"][2]["copy_job_key"],
             )
 
+    def test_material_folders_do_not_collide_case_insensitively(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scene, inspection = self._make_sources(root)
+            first_dir = root / "upper"
+            second_dir = root / "lower"
+            first_dir.mkdir()
+            second_dir.mkdir()
+            first = first_dir / "Model.exr"
+            second = second_dir / "model.exr"
+            first.write_bytes(b"upper")
+            second.write_bytes(b"lower")
+            inspection["references"] = [
+                _reference(first, "textures", "/mat/a/file"),
+                _reference(second, "textures", "/mat/b/file"),
+            ]
+            inspection["external_hdas"] = []
+            with mock.patch.object(
+                service.runner, "run_worker", return_value=inspection
+            ):
+                plan = service.build_package_plan(
+                    scene, root / "Archives"
+                )
+
+            folders = [
+                job["material_folder"] for job in plan["copy_jobs"]
+            ]
+            if os.path.normcase("Model") == os.path.normcase("model"):
+                # Case-insensitive filesystem: the folders must be
+                # distinct, otherwise one payload silently overwrites
+                # the other. Each folder keeps its own source casing.
+                self.assertEqual(folders, ["Model", "model_2"])
+            else:
+                self.assertEqual(folders, ["Model", "model"])
+            self.assertNotEqual(
+                os.path.normcase(folders[0]), os.path.normcase(folders[1])
+            )
+
     def test_preserves_all_houdini_license_extensions(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
