@@ -1,6 +1,8 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from change_prism.batch_import.scanner import (
     clear_list_dirs_cache,
@@ -9,6 +11,7 @@ from change_prism.batch_import.scanner import (
     parse_xml_attributes,
     scan_server_shots,
 )
+from change_prism.batch_import import scanner
 
 
 class BatchImportScannerTests(unittest.TestCase):
@@ -57,6 +60,70 @@ class BatchImportScannerTests(unittest.TestCase):
             parsed["attributes"]["average_translation"],
             [1, 2, 3],
         )
+
+    def test_unreadable_directory_is_skipped_and_collected(self):
+        def fake_walk(path, onerror=None):
+            if onerror is not None:
+                onerror(OSError("permission denied: %s" % path))
+            yield path, [], ["keep.fbx"]
+
+        with mock.patch.object(
+            scanner.os, "walk", side_effect=fake_walk
+        ):
+            errors = []
+            files = scanner._collect_matching_files(
+                r"S:\shot\step", ["*.fbx"], errors
+            )
+
+        self.assertEqual(files, [r"S:\shot\step\keep.fbx"])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("permission denied", errors[0])
+
+    def test_scan_server_shots_reports_walk_warnings(self):
+        def fake_walk(path, onerror=None):
+            if os.path.basename(str(path)).lower() == "vfx":
+                if onerror is not None:
+                    onerror(OSError("denied: %s" % path))
+                yield path, [], []
+                return
+            yield path, [], []
+
+        with tempfile.TemporaryDirectory() as directory:
+            shot = (
+                Path(directory)
+                / "proj"
+                / "publish"
+                / "shot"
+                / "EP01"
+                / "SC01"
+                / "shot0010"
+                / "shot_solution"
+                / "cloth_solution"
+                / "vfx"
+            )
+            shot.mkdir(parents=True)
+            (shot / "anim.fbx").touch()
+
+            with mock.patch.object(
+                scanner.os, "walk", side_effect=fake_walk
+            ):
+                warnings = []
+                results = scan_server_shots(
+                    directory, ["EP01/SC01/shot0010"],
+                    project_code="proj", warnings=warnings,
+                )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("denied", warnings[0])
+
+    def test_list_dirs_returns_empty_on_oserror(self):
+        clear_list_dirs_cache()
+        with mock.patch.object(
+            scanner.os, "listdir", side_effect=OSError("denied")
+        ):
+            self.assertEqual(scanner._list_dirs(r"S:\inaccessible"), [])
+        clear_list_dirs_cache()
 
     def test_scan_returns_fbx_and_frame_range(self):
         with tempfile.TemporaryDirectory() as directory:

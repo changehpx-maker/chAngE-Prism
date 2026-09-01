@@ -11,7 +11,6 @@ SERVER_STEPS = [
     ("shot_solution", "cloth_solution"),
     ("shot_solution", "hair_solution"),
 ]
-_SERVER_STEPS = SERVER_STEPS
 
 STEP_LABELS = {
     "shot_motion/shot_animation": "Animation",
@@ -40,9 +39,13 @@ _STEP_FILE_SPEC = {
 def _list_dirs(path):
     if not os.path.isdir(path):
         return []
+    try:
+        names = os.listdir(path)
+    except OSError:
+        return []
     return sorted(
         name
-        for name in os.listdir(path)
+        for name in names
         if os.path.isdir(os.path.join(path, name))
         and not name.startswith(".")
     )
@@ -162,20 +165,22 @@ def parse_xml_attributes(xml_path):
         return {"attributes": {}, "frame_range": None}
 
 
-def collect_step_files(step_dir, step_code):
+def collect_step_files(step_dir, step_code, errors=None):
     result = {}
     for subdir, patterns, key in _STEP_FILE_SPEC.get(step_code, []):
         result.setdefault(key, [])
         target = os.path.join(step_dir, subdir)
         if os.path.isdir(target):
-            result[key].extend(_collect_matching_files(target, patterns))
+            result[key].extend(
+                _collect_matching_files(target, patterns, errors)
+            )
     return result
 
 
-def _collect_matching_files(path, patterns):
+def _collect_matching_files(path, patterns, errors=None):
     matches = []
     patterns = [pattern.lower() for pattern in patterns]
-    for root, _dirs, files in _safe_walk(path):
+    for root, _dirs, files in _safe_walk(path, errors):
         for name in files:
             lowered = name.lower()
             if any(fnmatch.fnmatch(lowered, pattern) for pattern in patterns):
@@ -183,11 +188,14 @@ def _collect_matching_files(path, patterns):
     return sorted(matches, key=lambda item: item.lower())
 
 
-def _safe_walk(path):
-    def raise_error(error):
-        raise error
+def _safe_walk(path, errors=None):
+    def collect_error(error):
+        # Unreadable subdirectories are skipped so a single ACL problem
+        # cannot discard the whole scan; callers report them in bulk.
+        if errors is not None:
+            errors.append(str(error))
 
-    for root, directories, files in os.walk(path, onerror=raise_error):
+    for root, directories, files in os.walk(path, onerror=collect_error):
         directories[:] = sorted(
             directory
             for directory in directories
@@ -196,7 +204,11 @@ def _safe_walk(path):
         yield root, directories, files
 
 
-def scan_server_shots(server_root, filter_strs, project_code=None):
+def scan_server_shots(
+    server_root, filter_strs, project_code=None, warnings=None
+):
+    if warnings is None:
+        warnings = []
     if not os.path.isdir(server_root):
         return []
     filter_parts = [_parse_filter_parts(item) for item in filter_strs]
@@ -254,7 +266,7 @@ def scan_server_shots(server_root, filter_strs, project_code=None):
                                         "%s/%s" % (category, code), code
                                     ),
                                     "files": collect_step_files(
-                                        step_dir, code
+                                        step_dir, code, warnings
                                     ),
                                 }
                             )

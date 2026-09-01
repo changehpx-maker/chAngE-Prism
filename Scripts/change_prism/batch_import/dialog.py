@@ -23,7 +23,7 @@ from qtpy.QtWidgets import (
 
 
 class _SearchWorker(QThread):
-    finished_signal = Signal(object)
+    finished_signal = Signal(object, object)
     error_signal = Signal(str)
 
     def __init__(
@@ -35,6 +35,7 @@ class _SearchWorker(QThread):
         self.project_code = project_code
 
     def run(self):
+        warnings = []
         try:
             from change_prism.batch_import.scanner import (
                 clear_list_dirs_cache,
@@ -42,13 +43,13 @@ class _SearchWorker(QThread):
             )
 
             clear_list_dirs_cache()
-            self.finished_signal.emit(
-                scan_server_shots(
-                    self.server_root,
-                    self.filter_strings,
-                    project_code=self.project_code,
-                )
+            results = scan_server_shots(
+                self.server_root,
+                self.filter_strings,
+                project_code=self.project_code,
+                warnings=warnings,
             )
+            self.finished_signal.emit(results, warnings)
         except Exception as exc:
             self.error_signal.emit(str(exc))
 
@@ -418,8 +419,8 @@ class BatchImportDialog(QDialog):
             server_root, filters, project, self
         )
         self._search_worker.finished_signal.connect(
-            lambda results: self._on_search_finished(
-                results, server_root, project, filters
+            lambda results, warnings: self._on_search_finished(
+                results, warnings, server_root, project, filters
             )
         )
         self._search_worker.error_signal.connect(
@@ -431,7 +432,7 @@ class BatchImportDialog(QDialog):
         self._search_worker.start()
 
     def _on_search_finished(
-        self, results, server_root, project, filters
+        self, results, warnings, server_root, project, filters
     ):
         self.scan_results = results
         if not results:
@@ -441,6 +442,15 @@ class BatchImportDialog(QDialog):
                 % (server_root, project, ", ".join(filters)),
                 severity="info",
             )
+        if warnings:
+            shown = warnings[:20]
+            message = (
+                "Some server directories could not be read and were "
+                "skipped:\n\n%s" % "\n".join(shown)
+            )
+            if len(warnings) > len(shown):
+                message += "\n... and %d more" % (len(warnings) - len(shown))
+            self.core.popup(message, severity="warning")
         self._populate_results()
         self._set_busy(False, "")
 
