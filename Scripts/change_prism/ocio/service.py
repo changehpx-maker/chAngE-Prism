@@ -7,6 +7,11 @@ import sys
 
 _FRAME_RE = re.compile(r"^(.*?)(\d+)$")
 _INVENTORY_CACHE = {}
+_NO_WINDOW_FLAGS = (
+    getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if sys.platform == "win32"
+    else 0
+)
 
 
 def _clean_inventory_name(value):
@@ -182,6 +187,10 @@ def find_tools(core=None):
 
 def _inventory_cache_key(oiiotool, config):
     values = [os.path.normcase(os.path.abspath(oiiotool)), config]
+    if not config:
+        # With no explicit config the effective one comes from the OCIO
+        # environment variable, so it must be part of the cache key.
+        values.append(os.environ.get("OCIO", ""))
     for path in (oiiotool, config):
         if not path or str(path).startswith("ocio://"):
             values.append(None)
@@ -212,6 +221,7 @@ def read_colorconfig_inventory(oiiotool, config, timeout=30):
         errors="replace",
         timeout=timeout,
         shell=False,
+        creationflags=_NO_WINDOW_FLAGS,
     )
     output = "\n".join(part for part in (result.stdout, result.stderr) if part)
     if result.returncode:
@@ -337,6 +347,7 @@ def inspect_exr(oiiotool, path, timeout=30):
         errors="replace",
         timeout=timeout,
         shell=False,
+        creationflags=_NO_WINDOW_FLAGS,
     )
     output = "\n".join(part for part in (result.stdout, result.stderr) if part)
     if result.returncode:
@@ -439,7 +450,11 @@ def external_output_path(job, extension):
     if job.get("is_sequence"):
         frame_text = str(job["first"]).zfill(job["padding"])
         if stem.endswith(frame_text):
-            stem = stem[:-len(frame_text)].rstrip("._-")
+            candidate = stem[:-len(frame_text)].rstrip("._-")
+            # A frame-only name ("0001.exr") must not produce a
+            # nameless hidden ".rec709.mov" output.
+            if candidate:
+                stem = candidate
     return os.path.join(os.path.dirname(source), stem + ".rec709" + extension)
 
 

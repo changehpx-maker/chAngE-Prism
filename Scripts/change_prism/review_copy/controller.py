@@ -160,7 +160,10 @@ class ReviewCopyController:
                     else os.path.join(first_base, name)
                 )
 
-        for context in contexts[1 if sequence else 0:]:
+        # contexts[0] is already covered when it fed the sequence
+        # directory or the frame list above.
+        covered_first = bool(sequence) or bool(is_sequence and first_base)
+        for context in contexts[1 if covered_first else 0:]:
             path = context.get("path", "")
             if path:
                 paths.append(path)

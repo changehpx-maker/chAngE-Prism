@@ -25,7 +25,7 @@ class SettingsController(object):
         origin.addTab(self.widget, self.TAB_NAME)
 
     def load_settings(self, _origin, settings):
-        if self.widget is None:
+        if not self._widget_alive():
             return
         settings = settings if isinstance(settings, dict) else {}
         section = settings.get(CONFIG_SECTION, {})
@@ -44,8 +44,20 @@ class SettingsController(object):
             override,
         )
 
+    def _widget_alive(self):
+        if self.widget is None:
+            return False
+        try:
+            # Prism may have destroyed the settings window since
+            # load_ui; a deleted widget's C++ object raises here.
+            self.widget.isVisible()
+        except RuntimeError:
+            self.widget = None
+            return False
+        return True
+
     def save_settings(self, _origin, settings):
-        if self.widget is None or not isinstance(settings, dict):
+        if not self._widget_alive() or not isinstance(settings, dict):
             return
 
         section = settings.get(CONFIG_SECTION, {})

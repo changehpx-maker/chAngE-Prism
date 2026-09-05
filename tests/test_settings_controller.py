@@ -28,6 +28,9 @@ class _Widget:
     def __init__(self):
         self.loaded = None
 
+    def isVisible(self):
+        return True
+
     def set_values(self, *values):
         self.loaded = values
 
@@ -105,6 +108,20 @@ class SettingsControllerTests(unittest.TestCase):
                 "D:/Projects/Show/config.ocio",
             ),
         )
+
+    def test_deleted_widget_reference_is_reset(self):
+        controller = SettingsController(_Core(), _Plugin())
+
+        class _DeletedWidget:
+            def isVisible(self):
+                raise RuntimeError(
+                    "Internal C++ object already deleted."
+                )
+
+        controller.widget = _DeletedWidget()
+        controller.load_settings(None, {CONFIG_SECTION: {}})
+        controller.save_settings(None, {CONFIG_SECTION: {}})
+        self.assertIsNone(controller.widget)
 
     def test_save_merges_section_and_updates_runtime_server_root(self):
         plugin = _Plugin()

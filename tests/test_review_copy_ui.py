@@ -73,6 +73,11 @@ class ReviewCopyUiTests(unittest.TestCase):
 
     def test_background_copy_does_not_create_a_progress_window(self):
         app = QApplication.instance() or QApplication([])
+        # Other features may leave closed dialogs pending Qt/Python cleanup.
+        existing_progress = {
+            widget for widget in app.topLevelWidgets()
+            if isinstance(widget, QProgressDialog)
+        }
         started = threading.Event()
         release = threading.Event()
         worker_threads = []
@@ -99,6 +104,7 @@ class ReviewCopyUiTests(unittest.TestCase):
                 self.assertNotIn("progress", controller._copy_job)
                 self.assertFalse(any(
                     isinstance(widget, QProgressDialog)
+                    and widget not in existing_progress
                     for widget in app.topLevelWidgets()
                 ))
                 self.assertNotEqual(worker_threads[0], threading.get_ident())

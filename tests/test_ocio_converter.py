@@ -53,6 +53,25 @@ class InventoryTests(unittest.TestCase):
         )
         self.assertEqual(len(errors), 2)
 
+    def test_inventory_cache_key_tracks_ocio_environment(self):
+        with mock.patch.dict(os.environ, {"OCIO": "/a/config.ocio"}):
+            first = converter._inventory_cache_key("oiiotool", "")
+        with mock.patch.dict(os.environ, {"OCIO": "/b/config.ocio"}):
+            second = converter._inventory_cache_key("oiiotool", "")
+        self.assertNotEqual(first, second)
+        with mock.patch.dict(os.environ, {"OCIO": "/b/config.ocio"}):
+            again = converter._inventory_cache_key("oiiotool", "")
+        self.assertEqual(second, again)
+
+        explicit = converter._inventory_cache_key(
+            "oiiotool", "/explicit.ocio"
+        )
+        with mock.patch.dict(os.environ, {"OCIO": "/a/config.ocio"}):
+            self.assertEqual(
+                explicit,
+                converter._inventory_cache_key("oiiotool", "/explicit.ocio"),
+            )
+
     def test_inventory_query_is_cached(self):
         converter._INVENTORY_CACHE.clear()
         result = mock.Mock(returncode=0, stdout=INVENTORY, stderr="")
@@ -115,6 +134,26 @@ class SequenceTests(unittest.TestCase):
         jobs, errors = converter.collect_exr_jobs(["C:/tmp/file.png"])
         self.assertFalse(jobs)
         self.assertEqual(len(errors), 1)
+
+    def test_frame_only_sequence_output_stays_visible(self):
+        job = {
+            "source_path": os.path.join("D:", "seq", "1001.exr"),
+            "is_sequence": True,
+            "first": 1001,
+            "padding": 4,
+        }
+        path = converter.external_output_path(job, ".mov")
+        self.assertEqual(os.path.basename(path), "1001.rec709.mov")
+
+    def test_prefixed_sequence_output_strips_frame(self):
+        job = {
+            "source_path": os.path.join("D:", "seq", "beauty_1001.exr"),
+            "is_sequence": True,
+            "first": 1001,
+            "padding": 4,
+        }
+        path = converter.external_output_path(job, ".mov")
+        self.assertEqual(os.path.basename(path), "beauty.rec709.mov")
 
 
 class CommandTests(unittest.TestCase):
