@@ -26,7 +26,6 @@ from qtpy.QtWidgets import (
 )
 
 from change_prism.archive_core import (
-    calculate_archive_payload_stats,
     delete_archive_version,
     format_bytes,
     scan_archive_versions,
@@ -157,6 +156,7 @@ class ArchiveBrowserWidget(QWidget):
         self.refreshStatus = "invalid"
         self._versions = []
         self._version_groups = []
+        self._archive_root = ""
         self._scan_generation = 0
         self._scan_thread = None
         self._pending_scan = None
@@ -425,6 +425,7 @@ class ArchiveBrowserWidget(QWidget):
         self._version_groups = self._group_archive_versions(
             self._versions
         )
+        self._archive_root = archive_root
         self.status_label.setText(archive_root)
         self.status_label.setToolTip(archive_root)
         self.table.setRowCount(len(self._version_groups))
@@ -692,7 +693,10 @@ class ArchiveBrowserWidget(QWidget):
             )
             return
         version_path = version.get("path", "")
-        archive_root = os.path.dirname(version_path)
+        # Validate against the root that was actually scanned; deriving
+        # it from version_path itself would disable the containment
+        # check inside delete_archive_version.
+        archive_root = self._archive_root or os.path.dirname(version_path)
         application = version.get("application", "").capitalize()
         message = (
             "Permanently delete %s Archive %s?\n\n%s\n\n"

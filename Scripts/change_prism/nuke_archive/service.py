@@ -82,7 +82,12 @@ def build_package_plan(source_nk, archive_root):
     for read_index, parsed in enumerate(parsed_reads):
         raw_path = _decode_knob_value(parsed["raw_path"])
         resolved_path = _resolve_source_path(raw_path, source_nk)
-        is_sequence = bool(FRAME_TOKEN_PATTERN.search(resolved_path))
+        # Only the file name can carry a frame token; a "#" or "%04d"
+        # inside a parent directory name must not turn a single file
+        # into a whole-directory copy.
+        is_sequence = bool(
+            FRAME_TOKEN_PATTERN.search(os.path.basename(resolved_path))
+        )
 
         if is_sequence:
             source_item = os.path.dirname(resolved_path)
@@ -364,6 +369,10 @@ def _validated_execution_plan(plan):
 
     recorded_stat = plan.get("source_nk_stat") or {}
     current_stat = _file_fingerprint(source_nk)
+    if current_stat is None:
+        raise PackageExecutionError(
+            "Nuke script no longer exists:\n%s" % source_nk
+        )
     if (
         int(current_stat.get("size", -1))
         != int(recorded_stat.get("size", -2))
@@ -564,7 +573,8 @@ def _sequence_has_matching_file(pattern_path):
                 expression.append(r"\d+")
         position = match.end()
     expression.append(re.escape(filename_pattern[position:]))
-    regex = re.compile("^%s$" % "".join(expression), re.IGNORECASE)
+    flags = re.IGNORECASE if os.name == "nt" else 0
+    regex = re.compile("^%s$" % "".join(expression), flags)
 
     try:
         return any(

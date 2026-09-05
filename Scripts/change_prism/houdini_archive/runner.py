@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -13,8 +14,11 @@ import time
 HIP_VERSION_PATTERN = re.compile(
     br"_HIP_SAVEVERSION\s*=\s*['\"]([0-9]+\.[0-9]+\.[0-9]+)['\"]"
 )
+# "Houdini 20.5.33" (Windows), "Houdini20.5.333.framework" (macOS) and
+# "hfs20.5.33" (Linux) must all resolve to a build version.
 PATH_VERSION_PATTERN = re.compile(
-    r"Houdini[ _-]+([0-9]+\.[0-9]+\.[0-9]+)", re.IGNORECASE
+    r"(?:houdini|hfs)[ _-]?([0-9]+\.[0-9]+\.[0-9]+)",
+    re.IGNORECASE,
 )
 MINIMUM_VERSION = (20, 5, 0)
 WORKER_TIMEOUT_SECONDS = 3600
@@ -174,12 +178,18 @@ def run_worker(
                 encoding="utf-8",
                 errors="replace",
             )
+            popen_kwargs = {}
+            if sys.platform == "win32":
+                popen_kwargs["creationflags"] = getattr(
+                    subprocess, "CREATE_NO_WINDOW", 0
+                )
             process = subprocess.Popen(
                 args,
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
                 env=environment,
                 universal_newlines=True,
+                **popen_kwargs
             )
         except OSError as exc:
             raise RunnerError("Could not start hython:\n%s" % exc)

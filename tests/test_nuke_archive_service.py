@@ -115,6 +115,56 @@ class NukeArchiveServiceTests(unittest.TestCase):
             self.assertEqual(plan["estimated_total_bytes"], 3)
             self.assertIsNotNone(plan["available_bytes"])
 
+    def test_hash_in_directory_name_keeps_single_file_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "renders_v#2"
+            folder.mkdir()
+            frame = folder / "plate.1001.exr"
+            frame.write_bytes(b"frame")
+            script = root / "scene.nk"
+            _write_script(script, [frame])
+
+            plan = service.build_package_plan(script, root / "Archives")
+
+            self.assertEqual(len(plan["copy_jobs"]), 1)
+            self.assertEqual(plan["copy_jobs"][0]["kind"], "file")
+            self.assertEqual(plan["estimated_file_count"], 1)
+
+    def test_sequence_match_respects_platform_case_sensitivity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "FRAME.1001.exr").write_bytes(b"frame")
+            pattern = str(root / "frame.%04d.exr")
+
+            with mock.patch.object(service.os, "name", "posix"):
+                self.assertFalse(
+                    service._sequence_has_matching_file(pattern)
+                )
+            with mock.patch.object(service.os, "name", "nt"):
+                self.assertTrue(
+                    service._sequence_has_matching_file(pattern)
+                )
+
+    def test_execute_rejects_plan_when_source_stat_unreadable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            source.mkdir()
+            (source / "plate.1001.exr").write_bytes(b"frame")
+            script = root / "scene.nk"
+            _write_script(script, [source / "plate.%04d.exr"])
+            plan = service.build_package_plan(
+                script,
+                root / "Archives",
+            )
+
+            with mock.patch.object(
+                service, "_file_fingerprint", return_value=None
+            ):
+                with self.assertRaises(service.PackageExecutionError):
+                    service.execute_package(plan)
+
     def test_execute_copies_directories_and_rewrites_only_archive_nuke(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

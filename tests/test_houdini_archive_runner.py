@@ -1,4 +1,3 @@
-import os
 import sys
 import tempfile
 import unittest
@@ -67,6 +66,45 @@ class HoudiniArchiveRunnerTests(unittest.TestCase):
                 runner.resolve_hython(
                     "20.5.684", explicit_path=str(path)
                 )
+
+    def test_executable_version_parses_platform_install_paths(self):
+        self.assertEqual(
+            runner.executable_version(
+                r"C:\Program Files\Side Effects Software"
+                r"\Houdini 20.5.500\bin\hython.exe"
+            ),
+            "20.5.500",
+        )
+        self.assertEqual(
+            runner.executable_version("/opt/hfs20.5.33/bin/hython"),
+            "20.5.33",
+        )
+        self.assertEqual(
+            runner.executable_version(
+                "/Applications/Houdini/Houdini20.5.333.framework"
+                "/Versions/20.5.333/Resources/bin/hython"
+            ),
+            "20.5.333",
+        )
+
+    def test_discovery_accepts_linux_style_install_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hython = Path(tmp) / "hfs20.5.684" / "bin" / "hython"
+            hython.parent.mkdir(parents=True)
+            hython.touch()
+
+            with mock.patch.object(
+                runner,
+                "_discover_hython",
+                return_value=[str(hython)],
+            ):
+                selected = runner.resolve_hython("20.5.684")
+            self.assertEqual(selected["version"], "20.5.684")
+
+            selected = runner.resolve_hython(
+                "20.5.684", explicit_path=str(hython)
+            )
+            self.assertEqual(selected["version"], "20.5.684")
 
     def test_run_worker_times_out_and_terminates_hung_process(self):
         class _HungProcess:

@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "Scripts"))
 
 from change_prism import archive_core
-from change_prism.houdini_archive import service
+from change_prism.houdini_archive import archive_planning, service
 
 
 def _inspection(root):
@@ -131,6 +131,20 @@ def _skipped_missing_reference():
 
 
 class HoudiniArchiveServiceTests(unittest.TestCase):
+    def test_material_name_preserves_full_stem_for_compound_extensions(self):
+        self.assertEqual(
+            archive_planning._material_name("sim.bgeo.sc"),
+            "sim",
+        )
+        self.assertEqual(
+            archive_planning._material_name("cache.geo.gz"),
+            "cache",
+        )
+        self.assertEqual(
+            archive_planning._material_name("smoke.$F4.vdb"),
+            "smoke",
+        )
+
     def setUp(self):
         self.runner_patches = [
             mock.patch.object(

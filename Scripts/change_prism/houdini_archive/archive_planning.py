@@ -258,7 +258,7 @@ def _material_name(filename):
     clean = FRAME_TOKEN_PATTERN.sub("", filename)
     lower = clean.lower()
     if lower.endswith(".bgeo.sc"):
-        clean = clean[:-9]
+        clean = clean[:-8]
     elif lower.endswith(".geo.gz"):
         clean = clean[:-7]
     else:
