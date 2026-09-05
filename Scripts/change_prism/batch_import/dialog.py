@@ -1,6 +1,8 @@
 import os
+import queue
+import threading
 
-from qtpy.QtCore import QObject, Qt, QThread, Signal, Slot
+from qtpy.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -20,6 +22,15 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+def _scan_project_names(server_root, results):
+    from change_prism.batch_import.scanner import list_server_projects
+
+    try:
+        results.put((list_server_projects(server_root), ""))
+    except OSError as exc:
+        results.put(([], str(exc)))
 
 
 class _SearchWorker(QThread):
@@ -123,6 +134,10 @@ class BatchImportDialog(QDialog):
         self.scan_results = []
         self._search_worker = None
         self._import_running = False
+        self._project_results = None
+        self._project_timer = QTimer(self)
+        self._project_timer.setInterval(50)
+        self._project_timer.timeout.connect(self._receive_server_projects)
 
         self.setWindowTitle("Batch Import from Server")
         self.setMinimumSize(1050, 620)
@@ -315,26 +330,35 @@ class BatchImportDialog(QDialog):
             self._save_config_value("server_root", path)
             self.server_root_edit.setToolTip(path)
             self.server_root_edit.setCursorPosition(0)
-        self._populate_server_projects()
+        # editingFinished also fires on plain focus loss; rebuilding the
+        # project combo then would reset the user's selection.
+        if path != getattr(self, "_populated_server_root", None):
+            self._populate_server_projects()
 
     def _populate_server_projects(self):
-        self.project_combo.clear()
         server_root = self.server_root_edit.text().strip()
+        self._populated_server_root = server_root
+        self.project_combo.clear()
+        self.project_combo.setToolTip("Loading server projects...")
+        # Each scan owns a queue, so a previous root cannot replace new results.
+        self._project_results = queue.Queue()
+        threading.Thread(
+            target=_scan_project_names,
+            args=(server_root, self._project_results),
+            daemon=True,
+        ).start()
+        self._project_timer.start()
+
+    def _receive_server_projects(self):
         try:
-            entries = sorted(
-                os.scandir(server_root),
-                key=lambda entry: entry.name.lower(),
-            )
-        except OSError:
+            projects, error = self._project_results.get_nowait()
+        except queue.Empty:
             return
-        for entry in entries:
-            if entry.name.startswith("."):
-                continue
-            try:
-                if entry.is_dir():
-                    self.project_combo.addItem(entry.name)
-            except OSError:
-                continue
+        self._project_timer.stop()
+        self.project_combo.addItems(projects)
+        self.project_combo.setToolTip(
+            "Could not list server projects: %s" % error if error else ""
+        )
 
     def _on_project_changed(self, _text=None):
         project = self.project_combo.currentText().strip()
@@ -461,7 +485,10 @@ class BatchImportDialog(QDialog):
         )
 
     def _clear_search_worker(self):
+        worker = self._search_worker
         self._search_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def _populate_results(self):
         self.tree.clear()
@@ -560,10 +587,10 @@ class BatchImportDialog(QDialog):
 
     def _on_import_error(self, message):
         self._import_running = False
+        self._set_busy(False, "")
         self.core.popup(
             "Import failed:\n\n%s" % message, severity="error"
         )
-        self.on_create_finished(0, 0, summary={})
 
     def set_status(self, text):
         self.status_label.setText(text)
@@ -588,6 +615,7 @@ class BatchImportDialog(QDialog):
                 "Shot import is still running. Please wait."
             )
             return
+        self._project_timer.stop()
         super().reject()
 
     def on_create_finished(

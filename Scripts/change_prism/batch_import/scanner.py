@@ -6,6 +6,20 @@ import re
 import xml.etree.ElementTree as ET
 
 
+def list_server_projects(server_root):
+    projects = []
+    with os.scandir(server_root) as entries:
+        for entry in entries:
+            if entry.name.startswith("."):
+                continue
+            try:
+                if entry.is_dir():
+                    projects.append(entry.name)
+            except OSError:
+                continue
+    return sorted(projects, key=str.lower)
+
+
 SERVER_STEPS = [
     ("shot_motion", "shot_animation"),
     ("shot_solution", "cloth_solution"),
@@ -148,6 +162,10 @@ def parse_xml_attributes(xml_path):
         frame_range = None
         frame_count = attributes.get("sequence_frame")
         start = attributes.get("render_start_frame", 1001)
+        try:
+            start = int(float(start))
+        except (TypeError, ValueError):
+            start = 1001
         if (
             isinstance(frame_count, (int, float))
             and not isinstance(frame_count, bool)

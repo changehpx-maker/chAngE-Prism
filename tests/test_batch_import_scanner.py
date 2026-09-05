@@ -61,6 +61,29 @@ class BatchImportScannerTests(unittest.TestCase):
             [1, 2, 3],
         )
 
+    def test_corrupt_start_frame_keeps_other_attributes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            xml_path = Path(directory) / "description.xml"
+            xml_path.write_text(
+                "<root>"
+                '<attribute name="sequence_frame" value="48"/>'
+                '<attribute name="render_start_frame" value="abc"/>'
+                '<attribute name="average_translation" value="[1, 2, 3]"/>'
+                "</root>",
+                encoding="utf-8",
+            )
+            parsed = parse_xml_attributes(str(xml_path))
+
+        self.assertEqual(
+            parsed["attributes"]["average_translation"],
+            [1, 2, 3],
+        )
+        self.assertEqual(
+            parsed["attributes"]["sequence_frame"],
+            48,
+        )
+        self.assertEqual(parsed["frame_range"], [1001, 1048])
+
     def test_unreadable_directory_is_skipped_and_collected(self):
         def fake_walk(path, onerror=None):
             if onerror is not None:

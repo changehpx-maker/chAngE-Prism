@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -172,6 +173,9 @@ class BatchImportDialogTests(unittest.TestCase):
                     object(), str(root), lambda _data: None
                 )
             try:
+                self.assertTrue(self._wait_for(
+                    app, lambda: not dialog._project_timer.isActive()
+                ))
                 projects = [
                     dialog.project_combo.itemText(index)
                     for index in range(dialog.project_combo.count())
@@ -180,6 +184,64 @@ class BatchImportDialogTests(unittest.TestCase):
             finally:
                 dialog.close()
         app.processEvents()
+
+    def test_slow_project_scan_allows_root_change_and_close(self):
+        app = QApplication.instance() or QApplication([])
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        ui_thread = threading.get_ident()
+
+        def scan(root):
+            self.assertNotEqual(threading.get_ident(), ui_thread)
+            if root == "slow":
+                started.set()
+                release.wait(5)
+                finished.set()
+                return ["OldProject"]
+            return ["NewProject"]
+
+        with mock.patch(
+            "change_prism.batch_import.scanner.list_server_projects",
+            side_effect=scan,
+        ):
+            dialog = BatchImportDialog(object(), "slow", lambda _data: None)
+            try:
+                self.assertTrue(started.wait(1))
+                dialog.server_root_edit.setText("fast")
+                dialog._on_server_root_changed()
+                self.assertTrue(self._wait_for(
+                    app, lambda: dialog.project_combo.count() == 1
+                ))
+                self.assertEqual(dialog.project_combo.currentText(), "NewProject")
+                dialog._on_server_root_changed()
+                self.assertFalse(dialog._project_timer.isActive())
+                dialog.show()
+                dialog.close()
+                self.assertFalse(dialog.isVisible())
+                self.assertFalse(finished.is_set())
+            finally:
+                release.set()
+                self.assertTrue(finished.wait(1))
+                app.processEvents()
+                self.assertEqual(dialog.project_combo.currentText(), "NewProject")
+                dialog.close()
+
+    def test_failed_project_scan_finishes_with_visible_error(self):
+        app = QApplication.instance() or QApplication([])
+        with mock.patch(
+            "change_prism.batch_import.scanner.list_server_projects",
+            side_effect=OSError("Server unavailable"),
+        ):
+            dialog = BatchImportDialog(object(), "missing", lambda _data: None)
+            try:
+                self.assertTrue(self._wait_for(
+                    app, lambda: not dialog._project_timer.isActive()
+                ))
+                self.assertEqual(dialog.project_combo.count(), 0)
+                self.assertIn("Server unavailable", dialog.project_combo.toolTip())
+            finally:
+                dialog.close()
 
     def test_async_import_copies_files_without_blocking_prism_phase(self):
         app = QApplication.instance() or QApplication([])
