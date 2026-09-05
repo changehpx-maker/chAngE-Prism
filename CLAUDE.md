@@ -10,6 +10,10 @@
 - Houdini Archive 支持 Houdini 20.5+。
 - Qt 代码同时考虑 Qt5/PySide2 与 Qt6/PySide6。
 - 插件版本的唯一代码来源是 `Scripts/Prism_chAngE_Prism_Variables.py`，不要在本文件维护版本号。
+- 部署目录名必须与入口文件前缀一致：Prism 按**目录名**拼模块名
+  （目录 `chAngE_Prism` → 导入 `Prism_chAngE_Prism_init`）。目录名改成
+  `change_prism` 之类会导致 `ModuleNotFoundError: No module named
+  'Prism_change_prism_init'`，插件整个加载失败。
 
 ## 架构
 

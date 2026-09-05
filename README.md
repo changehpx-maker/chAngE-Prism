@@ -1,6 +1,6 @@
 # chAngE_Prism
 
-`chAngE_Prism v2.5.0` 是基于 Prism 2 的制作流程扩展插件，当前主要服务于镜头批量创建、外部图片资产管理、审片媒体、ACES/OCIO 转换以及 Nuke/Houdini Archive 打包。
+`chAngE_Prism v2.5.1` 是基于 Prism 2 的制作流程扩展插件，当前主要服务于镜头批量创建、外部图片资产管理、审片媒体、ACES/OCIO 转换以及 Nuke/Houdini Archive 打包。
 
 Windows Prism 2.1.2/2.1.3 是当前正式验证环境。Nuke Archive 纯核心额外兼容 Nuke 13.2 的 Python 3.7；Houdini Archive 和 Asset Library 环境光支持 Houdini 20.5+。
 
@@ -109,6 +109,7 @@ Prism 用户设置。旧版根目录 `config.json` 不再参与运行，可在�
 
 ## Batch Import
 
+- 项目下拉列表在后台扫描服务器根目录；切换路径时忽略旧结果，关闭窗口无需等待目录扫描。扫描失败原因显示在项目下拉框的提示中。
 - 扫描 `shot_animation`、`cloth_solution`、`hair_solution`，递归识别大小写不敏感的 FBX、ABC、MOV 和 XML。
 - Filter 支持完整 `episode/sequence/shot` 行，也支持连续三行 `episode/`、`sequence/`、`shot`。
 - `Create shot only` 仅创建或更新 Prism 镜头、Fx/Effects 等部门与任务、预设场景和帧范围；Shotinfo 不写入镜头 metadata。
@@ -194,15 +195,15 @@ Houdini HOM 冒烟测试：
 
 ```powershell
 & "C:\Program Files\Side Effects Software\Houdini 20.5.684\bin\hython.exe" tests\houdini_archive_smoke.py
-& "C:\Program Files\Side Effects Software\Houdini 21.0.631\bin\hython.exe" tests\houdini_archive_smoke.py
+& "C:\Program Files\Side Effects Software\Houdini 21.0.792\bin\hython.exe" tests\houdini_archive_smoke.py
 & "C:\Program Files\Side Effects Software\Houdini 22.0.368\bin\hython.exe" tests\houdini_archive_smoke.py
 
 & "C:\Program Files\Side Effects Software\Houdini 20.5.684\bin\hython.exe" tests\houdini_asset_library_smoke.py
-& "C:\Program Files\Side Effects Software\Houdini 21.0.631\bin\hython.exe" tests\houdini_asset_library_smoke.py
+& "C:\Program Files\Side Effects Software\Houdini 21.0.792\bin\hython.exe" tests\houdini_asset_library_smoke.py
 & "C:\Program Files\Side Effects Software\Houdini 22.0.368\bin\hython.exe" tests\houdini_asset_library_smoke.py
 ```
 
-headless/HOM 测试需要对应 DCC 许可证。最近一次 Prism 2.1.2/2.1.3 / PySide6 环境验证均运行 148 项测试：通过 141 项，跳过 7 项需要额外权限或外部工具的环境型测试；Houdini 20.5.684、21.0.631、22.0.368 的 Asset Library HOM 冒烟测试均已通过。
+headless/HOM 测试需要对应 DCC 许可证。2026-09-05 在 Prism 2.1.3 / Python 3.13 / PySide6 环境验证：200 项测试中通过 199 项，跳过 1 项目录符号链接测试（环境无法创建链接），包含 bundled OCIO/FFmpeg 转换验证。Houdini 20.5.684、21.0.792 的 Archive 和 Asset Library HOM 冒烟测试均通过；Nuke 13.2v1 和 Houdini 22.0.368 因许可证不可用未完成验证。此记录不代表其他 Prism/DCC 版本或生产场景已经验收。
 
 ## 进一步文档
 
