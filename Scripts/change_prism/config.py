@@ -1,5 +1,4 @@
 import os
-import sys
 
 
 CONFIG_SECTION = "change_prism"
@@ -7,7 +6,7 @@ SETTINGS_LOCATION = "Prism Settings > User > chAngE_Prism"
 ASSET_LIBRARY_THUMBNAIL_SIZES = ("small", "medium", "large")
 
 _OS_DEFAULTS = {
-    "server_root": "P:\\" if sys.platform == "win32" else "",
+    "server_root": "",
     "local_projects_root": os.path.expanduser("~/Desktop/Projects"),
 }
 

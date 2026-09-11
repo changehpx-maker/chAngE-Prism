@@ -423,6 +423,12 @@ def execute_package(plan, progress_callback=None, is_cancelled=None):
         )
     except PreflightError as exc:
         raise PackageExecutionError(str(exc))
+    except OSError as exc:
+        # The source can disappear between the existence check and the
+        # stat/size probes; report it like any other preflight failure.
+        raise PackageExecutionError(
+            "Could not inspect the source Houdini scene:\n%s" % exc
+        )
     if fresh_plan["source_hip_stat"] != plan.get("source_hip_stat"):
         raise PackageExecutionError(
             "The source Houdini scene changed after preflight. "

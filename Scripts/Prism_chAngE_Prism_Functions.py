@@ -52,6 +52,11 @@ class Prism_chAngE_Prism_Functions(object):
             plugin=self,
         )
         self.core.callbacks.registerCallback(
+            "productSelectorContextMenuRequested",
+            self.onProductSelectorContextMenuRequested,
+            plugin=self,
+        )
+        self.core.callbacks.registerCallback(
             "userSettings_loadUI",
             self.onUserSettingsLoadUI,
             plugin=self,
@@ -109,6 +114,14 @@ class Prism_chAngE_Prism_Functions(object):
             origin, menu, self.onOCIOQuickConvert
         )
         self.review_copy.add_media_context_menu(origin, menu)
+
+    @err_catcher(name=__name__)
+    def onProductSelectorContextMenuRequested(
+        self, origin, view_ui, pos, menu
+    ):
+        self.review_copy.add_product_context_menu(
+            origin, view_ui, pos, menu
+        )
 
     @err_catcher(name=__name__)
     def onOCIOConvert(self, media_player=None):

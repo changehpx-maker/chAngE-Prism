@@ -9,31 +9,14 @@ from change_prism.nuke_archive.service import (
 
 
 MENU_LABEL = "Package Nuke Archive..."
-TAB_LABEL = "Archive"
 
 
 class NukeArchiveController:
     def __init__(self, core, refresh_callback=None):
         self.core = core
         self.refresh_callback = refresh_callback
-        self.browser_widget = None
         self._active_jobs = []
         self._preflight_job = None
-
-    def add_project_browser_tab(self, origin):
-        tab_widget = getattr(origin, "tbw_project", None)
-        if tab_widget is not None:
-            for index in range(tab_widget.count()):
-                widget = tab_widget.widget(index)
-                if widget.property("tabType") == TAB_LABEL:
-                    self.browser_widget = widget
-                    return
-
-        from change_prism.nuke_archive.dialog import ArchiveBrowserWidget
-
-        widget = ArchiveBrowserWidget(self.core, parent=origin)
-        origin.addTab(TAB_LABEL, widget)
-        self.browser_widget = widget
 
     def add_file_context_menu(self, origin, menu, filepath):
         if not self.is_packageable_path(filepath):
@@ -239,10 +222,3 @@ class NukeArchiveController:
     def refresh_archive_tab(self):
         if callable(self.refresh_callback):
             self.refresh_callback()
-            return
-        widget = self.browser_widget
-        if widget is not None:
-            try:
-                widget.refresh_versions()
-            except RuntimeError:
-                self.browser_widget = None

@@ -34,7 +34,7 @@ class ConfigTests(unittest.TestCase):
         core = _Core()
         self.assertEqual(
             config.get_server_root(core),
-            "P:\\" if sys.platform == "win32" else "",
+            "",
         )
         self.assertEqual(
             config.get_local_projects_root(core),

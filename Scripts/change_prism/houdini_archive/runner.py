@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -13,10 +14,14 @@ import time
 HIP_VERSION_PATTERN = re.compile(
     br"_HIP_SAVEVERSION\s*=\s*['\"]([0-9]+\.[0-9]+\.[0-9]+)['\"]"
 )
+# "Houdini 20.5.33" (Windows), "Houdini20.5.333.framework" (macOS) and
+# "hfs20.5.33" (Linux) must all resolve to a build version.
 PATH_VERSION_PATTERN = re.compile(
-    r"Houdini[ _-]+([0-9]+\.[0-9]+\.[0-9]+)", re.IGNORECASE
+    r"(?:houdini|hfs)[ _-]?([0-9]+\.[0-9]+\.[0-9]+)",
+    re.IGNORECASE,
 )
 MINIMUM_VERSION = (20, 5, 0)
+WORKER_TIMEOUT_SECONDS = 3600
 
 
 class RunnerError(RuntimeError):
@@ -24,6 +29,10 @@ class RunnerError(RuntimeError):
 
 
 class RunnerCancelled(RunnerError):
+    pass
+
+
+class RunnerTimeout(RunnerError):
     pass
 
 
@@ -127,7 +136,10 @@ def run_worker(
     plan=None,
     worker_env=None,
     is_cancelled=None,
+    timeout_seconds=None,
 ):
+    if timeout_seconds is None:
+        timeout_seconds = WORKER_TIMEOUT_SECONDS
     temporary_root = tempfile.mkdtemp(prefix="houdini_archive_worker_")
     result_path = os.path.join(temporary_root, "result.json")
     plan_path = ""
@@ -156,40 +168,62 @@ def run_worker(
     process = None
     log_handle = None
     stdout = ""
+    started = time.monotonic()
     try:
         log_path = os.path.join(temporary_root, "worker.log")
-        log_handle = open(
-            log_path,
-            "w",
-            encoding="utf-8",
-            errors="replace",
-        )
-        process = subprocess.Popen(
-            args,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            env=environment,
-            universal_newlines=True,
-        )
+        try:
+            log_handle = open(
+                log_path,
+                "w",
+                encoding="utf-8",
+                errors="replace",
+            )
+            popen_kwargs = {}
+            if sys.platform == "win32":
+                popen_kwargs["creationflags"] = getattr(
+                    subprocess, "CREATE_NO_WINDOW", 0
+                )
+            process = subprocess.Popen(
+                args,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                env=environment,
+                universal_newlines=True,
+                **popen_kwargs
+            )
+        except OSError as exc:
+            raise RunnerError("Could not start hython:\n%s" % exc)
+
         while process.poll() is None:
             if is_cancelled and is_cancelled():
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
-                raise RunnerCancelled("Houdini Archive packaging was cancelled.")
+                _terminate_process(process)
+                raise RunnerCancelled(
+                    "Houdini Archive packaging was cancelled."
+                )
+            if (
+                timeout_seconds
+                and time.monotonic() - started >= timeout_seconds
+            ):
+                log_tail = _read_log_tail(log_path)
+                _terminate_process(process)
+                raise RunnerTimeout(
+                    "Houdini Worker did not finish within %s and was "
+                    "terminated.\n\n%s"
+                    % (_format_duration(timeout_seconds), log_tail)
+                )
             time.sleep(0.1)
         log_handle.close()
         log_handle = None
-        with open(
-            log_path,
-            "r",
-            encoding="utf-8",
-            errors="replace",
-        ) as handle:
-            stdout = handle.read()
+        try:
+            with open(
+                log_path,
+                "r",
+                encoding="utf-8",
+                errors="replace",
+            ) as handle:
+                stdout = handle.read()
+        except OSError:
+            stdout = ""
         if not os.path.isfile(result_path):
             raise RunnerError(
                 "Houdini Worker did not produce a result.\n%s"
@@ -213,12 +247,39 @@ def run_worker(
             raise RunnerError("Houdini Worker returned an invalid result.")
         result["worker_log"] = stdout
         return result
-    except OSError as exc:
-        raise RunnerError("Could not start hython:\n%s" % exc)
     finally:
         if log_handle is not None:
             log_handle.close()
         shutil.rmtree(temporary_root, ignore_errors=True)
+
+
+def _terminate_process(process):
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def _read_log_tail(path, limit=2000):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            data = handle.read()
+    except OSError:
+        return ""
+    return data[-limit:].strip()
+
+
+def _format_duration(seconds):
+    seconds = max(0, int(round(float(seconds or 0))))
+    if seconds < 120:
+        return "%d seconds" % seconds
+    minutes = seconds // 60
+    if minutes < 120:
+        return "%d minutes" % minutes
+    hours, minutes = divmod(minutes, 60)
+    return "%d hours %d minutes" % (hours, minutes)
 
 
 def _discover_hython(environ=None):

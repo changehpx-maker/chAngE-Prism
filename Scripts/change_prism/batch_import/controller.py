@@ -11,28 +11,25 @@ from change_prism.batch_import.service import write_failure_report
 
 class BatchImportController(object):
     DEPARTMENTS = {
-        "FX": {
-            "name": "Effects",
+        "Fx": {
+            "name": "Fx",
+            "task": "Effects",
             "ext": ".hip",
             "software": "Houdini",
         },
         "Lighting": {
             "name": "Lighting",
+            "task": "Lighting",
             "ext": ".hip",
             "software": "Houdini",
         },
         "Compositing": {
             "name": "Compositing",
+            "task": "Compositing",
             "ext": ".nk",
             "software": "Nuke",
         },
     }
-
-    SERVER_META_KEYS = (
-        "chAngE_server_project",
-        "chAngE_server_scene",
-        "chAngE_server_shot",
-    )
 
     def __init__(self, core, plugin):
         self.core = core
@@ -58,6 +55,60 @@ class BatchImportController(object):
         )
         dialog.exec_()
 
+    def _load_or_create_project(self, data, reporter):
+        project_name = data["project_name"]
+        project_path = data["project_path"]
+        config_path = self.core.configs.getProjectConfigPath(project_path)
+        created = False
+        if os.path.exists(config_path):
+            reporter.set_status(
+                "Opening existing project '%s'..." % project_name
+            )
+        else:
+            reporter.set_status(
+                "Creating Prism project '%s'..." % project_name
+            )
+            config_path = self.core.projects.createProject(
+                name=project_name,
+                path=project_path,
+                preset="Default",
+                parent=data.get("parent"),
+            )
+            if not config_path:
+                return False
+            created = True
+
+        reporter.set_status("Loading project '%s'..." % project_name)
+        loaded = self.core.projects.changeProject(config_path)
+        if not loaded:
+            raise RuntimeError(
+                "Prism could not load project config:\n%s" % config_path
+            )
+
+        self._preset_scenes_cache = None
+        self._keep_only_shot_ranges()
+        if created:
+            self._set_project_departments()
+        return True
+
+    def _keep_only_shot_ranges(self):
+        getter = getattr(self.core, "getConfig", None)
+        setter = getattr(self.core, "setConfig", None)
+        if not callable(getter) or not callable(setter):
+            return
+        shot_info = getter(
+            config="shotinfo", allowCache=False
+        ) or {}
+        cleaned = {}
+        if "shotRanges" in shot_info:
+            cleaned["shotRanges"] = shot_info["shotRanges"]
+        if shot_info != cleaned:
+            setter(
+                data=cleaned,
+                config="shotinfo",
+                updateNestedData=False,
+            )
+
     def _start_project_and_shots(self, data):
         finished_callback = data.get("_finished_callback")
         reporter = data.get("_reporter") or _NullReporter()
@@ -69,51 +120,24 @@ class BatchImportController(object):
             raise RuntimeError("A Batch Import is already running.")
 
         project_name = data["project_name"]
-        project_path = data["project_path"]
         selected = list(data["selected"])
         project_loaded = False
         try:
-            config_path = os.path.join(
-                project_path,
-                "00_Pipeline",
-                "project_config.json",
-            )
-            if os.path.exists(config_path):
-                reporter.set_status(
-                    "Opening existing project '%s'..." % project_name
-                )
-                self.core.projects.changeProject(config_path)
-                project_loaded = True
-            else:
-                reporter.set_status(
-                    "Creating Prism project '%s'..." % project_name
-                )
-                config_path = self.core.projects.createProject(
-                    name=project_name,
-                    path=project_path,
-                    preset="Default",
-                    parent=data.get("parent"),
-                )
-                if not config_path:
-                    finished_callback(
-                        self._build_import_result(
-                            0,
-                            len(selected),
-                            [],
-                            {
-                                "project": project_name,
-                                "total": len(selected),
-                            },
-                            [],
-                        )
+            project_loaded = self._load_or_create_project(data, reporter)
+            if not project_loaded:
+                finished_callback(
+                    self._build_import_result(
+                        0,
+                        len(selected),
+                        [],
+                        {
+                            "project": project_name,
+                            "total": len(selected),
+                        },
+                        [],
                     )
-                    return None
-                reporter.set_status(
-                    "Loading project '%s'..." % project_name
                 )
-                self.core.projects.changeProject(config_path)
-                project_loaded = True
-                self._set_project_departments()
+                return None
         except Exception as exc:
             finished_callback(
                 self._build_import_result(
@@ -166,7 +190,6 @@ class BatchImportController(object):
         try:
             entity = self._create_single_shot(
                 item,
-                state["project_name"],
                 state["shots_cache"],
             )
             if state["create_only"]:
@@ -276,7 +299,26 @@ class BatchImportController(object):
         state = self._import_state
         if state is None:
             return
-        item = (state.get("current") or {}).get("item", {})
+        current = state.get("current") or {}
+        item = current.get("item", {})
+        cleanup_errors = []
+        for cleanup, payload in (
+            (
+                self.file_processor.cleanup_prepared_product,
+                current.get("prepared"),
+            ),
+        ):
+            if not payload:
+                continue
+            try:
+                cleanup(payload)
+            except Exception as exc:
+                cleanup_errors.append(str(exc))
+        if cleanup_errors:
+            message = "%s | Cleanup failed: %s" % (
+                message,
+                "; ".join(cleanup_errors),
+            )
         state["failures"].append(
             {
                 "episode": item.get("episode", ""),
@@ -353,126 +395,6 @@ class BatchImportController(object):
             )
             submenu.addAction(action)
 
-    def _create_project_and_shots(self, data, reporter=None):
-        project_name = data["project_name"]
-        project_path = data["project_path"]
-        selected = data["selected"]
-        parent = data.get("parent")
-        create_only = bool(data.get("create_only"))
-        copy_to_local = bool(data.get("copy_to_local"))
-        pdg_enabled = bool(data.get("pdg_enabled"))
-        reporter = reporter or _NullReporter()
-        project_loaded = False
-        shot_data_list = []
-
-        try:
-            config_path = os.path.join(
-                project_path, "00_Pipeline", "project_config.json"
-            )
-            if os.path.exists(config_path):
-                reporter.set_status(
-                    "Opening existing project '%s'..." % project_name
-                )
-                self.core.projects.changeProject(config_path)
-                project_loaded = True
-            else:
-                reporter.set_status(
-                    "Creating Prism project '%s'..." % project_name
-                )
-                config_path = self.core.projects.createProject(
-                    name=project_name,
-                    path=project_path,
-                    preset="Default",
-                    parent=parent,
-                )
-                if not config_path:
-                    return self._build_import_result(
-                        0,
-                        len(selected),
-                        [],
-                        {
-                            "project": project_name,
-                            "total": len(selected),
-                        },
-                        [],
-                    )
-                reporter.set_status(
-                    "Loading project '%s'..." % project_name
-                )
-                self.core.projects.changeProject(config_path)
-                project_loaded = True
-                self._set_project_departments()
-
-            success = 0
-            failures = []
-            shots_cache = {}
-            for index, item in enumerate(selected):
-                reporter.update_progress(index + 1)
-                try:
-                    entity = self._create_single_shot(
-                        item, project_name, shots_cache
-                    )
-                    if not create_only:
-                        shot_data_list.append(
-                            self.file_processor.process(
-                                item,
-                                entity,
-                                project_name,
-                                copy_to_local,
-                            )
-                        )
-                    success += 1
-                except Exception as exc:
-                    failures.append(
-                        {
-                            "episode": item.get("episode", ""),
-                            "sequence": item.get("sequence", ""),
-                            "shot": item.get("shot", ""),
-                            "server_dir": item.get("server_dir", ""),
-                            "error": str(exc),
-                        }
-                    )
-
-            try:
-                failure_report = write_failure_report(
-                    self.core, project_name, failures
-                )
-            except OSError:
-                failure_report = ""
-            summary = {
-                "project": project_name,
-                "total": len(selected),
-                "create_only": create_only,
-                "copy_to_local": copy_to_local,
-                "pdg_enabled": (
-                    pdg_enabled
-                    and not create_only
-                    and bool(shot_data_list)
-                ),
-                "failure_report": failure_report,
-            }
-            return self._build_import_result(
-                success,
-                len(failures),
-                failures,
-                summary,
-                shot_data_list,
-                project_loaded=project_loaded,
-            )
-        except Exception as exc:
-            return self._build_import_result(
-                0,
-                len(selected),
-                [],
-                {
-                    "project": project_name,
-                    "total": len(selected),
-                },
-                shot_data_list,
-                project_loaded=project_loaded,
-                error=str(exc),
-            )
-
     @staticmethod
     def _build_import_result(
         success,
@@ -508,11 +430,23 @@ class BatchImportController(object):
         if summary.get("pdg_enabled") and shot_data_list:
             from change_prism.batch_import.pdg import PDGProcessor
 
-            dialog.set_status("Launching PDG FBX Convert...")
-            self._pdg_processor = PDGProcessor(self.core)
-            self._pdg_processor.run(
-                shot_data_list, summary.get("project", "")
-            )
+            summary["pdg_started"] = False
+            if (
+                self._pdg_processor is not None
+                and self._pdg_processor.is_running()
+            ):
+                self.core.popup(
+                    "PDG FBX Convert is already running. "
+                    "This batch was not launched.",
+                    severity="warning",
+                    parent=dialog,
+                )
+            else:
+                dialog.set_status("Launching PDG FBX Convert...")
+                self._pdg_processor = PDGProcessor(self.core)
+                summary["pdg_started"] = self._pdg_processor.run(
+                    shot_data_list, summary.get("project", "")
+                )
 
         if result.get("project_loaded"):
             dialog.set_status("Opening Project Browser...")
@@ -537,15 +471,13 @@ class BatchImportController(object):
             {
                 "name": info["name"],
                 "abbreviation": code,
-                "defaultTasks": [info["name"]],
+                "defaultTasks": [info["task"]],
             }
             for code, info in self.DEPARTMENTS.items()
         ]
         setter("shot", departments)
 
-    def _create_single_shot(
-        self, item, project_name=None, shots_cache=None
-    ):
+    def _create_single_shot(self, item, shots_cache=None):
         entity = {
             "type": "shot",
             "episode": item["episode"],
@@ -577,29 +509,11 @@ class BatchImportController(object):
         )
 
         frame_range = item.get("frame_range") or [1001, 1100]
-        metadata = {
-            "chAngE_server_project": {
-                "show": True,
-                "value": (
-                    project_name or item.get("project_code", "")
-                ),
-            },
-            "chAngE_server_scene": {
-                "show": False,
-                "value": item["sequence"],
-            },
-            "chAngE_server_shot": {
-                "show": False,
-                "value": item["shot"],
-            },
-        }
-
         if not found:
             created = self.core.entities.createEntity(
                 entity,
                 frameRange=frame_range,
                 silent=True,
-                metaData=metadata,
             )
             if isinstance(created, dict):
                 entity = created.get("entity", entity)
@@ -611,9 +525,6 @@ class BatchImportController(object):
         self.core.entities.setShotRange(
             found, frame_range[0], frame_range[1]
         )
-        self.core.entities.setMetaData(
-            entity=found, metaData=metadata
-        )
         return found
 
     def _ensure_departments(self, entity):
@@ -623,30 +534,34 @@ class BatchImportController(object):
                 self.core.entities.createDepartment(
                     department, entity, createCat=False
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                if not self._is_already_exists_error(exc):
+                    raise
             try:
                 self.core.entities.createCategory(
-                    entity, department, info["name"]
+                    entity, department, info["task"]
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                if not self._is_already_exists_error(exc):
+                    raise
             preset = self._find_preset(
                 presets, info["ext"], info["software"]
             )
             if preset:
                 self._create_scene_from_preset(
-                    entity, preset, department, info["name"]
+                    entity, preset, department, info["task"]
                 )
+
+    @staticmethod
+    def _is_already_exists_error(exc):
+        message = str(exc).lower()
+        return "already exist" in message or "已存在" in message
 
     def _get_preset_scenes(self):
         if self._preset_scenes_cache is None:
-            try:
-                self._preset_scenes_cache = list(
-                    self.core.entities.getPresetScenes() or []
-                )
-            except Exception:
-                self._preset_scenes_cache = []
+            self._preset_scenes_cache = list(
+                self.core.entities.getPresetScenes() or []
+            )
         return self._preset_scenes_cache
 
     @staticmethod
@@ -687,25 +602,7 @@ class BatchImportController(object):
             )
         except TypeError:
             pass
-        try:
-            return create(entity, preset_path, department, task)
-        except Exception:
-            return None
-
-    def _ingest_mov_as_media(self, entity, mov_paths):
-        return self.file_processor.import_media_files(
-            entity, mov_paths
-        )
-
-    def _next_media_version(
-        self, entity, identifier, media_type, current_version
-    ):
-        return self.file_processor._next_media_version(
-            entity, identifier, media_type, current_version
-        )
-
-    def _increment_version(self, version):
-        return self.file_processor._increment_version(version)
+        return create(entity, preset_path, department, task)
 
     def _open_server_subdir(self, selected_items, subdir):
         from change_prism.config import get_server_root
@@ -720,15 +617,22 @@ class BatchImportController(object):
             )
             if not shot_data:
                 continue
-            sequence = (shot_data.get("sequence") or "").strip()
-            metadata = self._read_metadata_from_item(shot_data)
-            project = metadata.get(
-                "chAngE_server_project", ""
-            )
-            scene = metadata.get("chAngE_server_scene", "")
-            shot_name = metadata.get(
-                "chAngE_server_shot", ""
-            )
+            sequence = (
+                shot_data.get("sequence")
+                or shot_data.get("episode")
+                or ""
+            ).strip()
+            project = str(
+                getattr(self.core, "projectName", "") or ""
+            ).strip()
+            scene, separator, shot_name = str(
+                shot_data.get("shot") or ""
+            ).partition("_")
+            if not separator:
+                scene = ""
+                shot_name = ""
+            scene = scene.strip()
+            shot_name = shot_name.strip()
             if not all((sequence, project, scene, shot_name)):
                 continue
             path = os.path.join(
@@ -751,18 +655,6 @@ class BatchImportController(object):
                 "Server folder not found for the selected shots.",
                 severity="warning",
             )
-
-    def _read_metadata_from_item(self, shot_data):
-        metadata = {}
-        raw = self.core.entities.getMetaData(shot_data)
-        for key in self.SERVER_META_KEYS:
-            value = raw.get(key, {})
-            metadata[key] = (
-                value.get("value", "")
-                if isinstance(value, dict)
-                else str(value or "")
-            )
-        return metadata
 
 
 class _NullReporter(object):

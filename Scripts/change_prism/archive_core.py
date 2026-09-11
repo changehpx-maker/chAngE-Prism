@@ -281,6 +281,8 @@ def _scan_version(
         try:
             with open(manifest_path, "r", encoding="utf-8") as handle:
                 manifest = json.load(handle)
+            if not isinstance(manifest, dict):
+                manifest = {}
             manifest_valid = _is_manifest_valid(manifest)
         except (OSError, ValueError, TypeError):
             manifest = {}
@@ -312,7 +314,9 @@ def _scan_version(
         source_stat = manifest.get("source_scene_stat") or manifest.get(
             "source_hip_stat"
         )
-        references = manifest.get("dependencies", [])
+        references = _manifest_dependency_items(
+            manifest.get("dependencies")
+        )
     else:
         scene_location_mismatch = False
         packaged_scene = _resolve_manifest_path(
@@ -324,7 +328,7 @@ def _scan_version(
             )
         source_scene = manifest.get("source_nk", "")
         source_stat = manifest.get("source_nk_stat")
-        references = _normalise_nuke_reads(manifest.get("reads", []))
+        references = _normalise_nuke_reads(manifest.get("reads"))
 
     inferred_context = infer_scene_context(source_scene)
     department = (
@@ -337,8 +341,12 @@ def _scan_version(
         or inferred_context["task"]
         or scoped_task
     )
-    copy_jobs = manifest.get("copy_jobs", [])
-    summary = manifest.get("summary", {})
+    copy_jobs = manifest.get("copy_jobs")
+    if not isinstance(copy_jobs, list):
+        copy_jobs = []
+    summary = manifest.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
     status = _health_status(
         version_path,
         packaged_scene,
@@ -478,7 +486,7 @@ def _health_status(
         deep=deep_health,
     ):
         return "Missing Files"
-    if source_scene and source_stat:
+    if source_scene and isinstance(source_stat, dict) and source_stat:
         if not os.path.isfile(source_scene):
             return "Source Changed"
         try:
@@ -507,7 +515,12 @@ def _health_status(
 
 def _manifest_payload_missing(version_path, manifest, deep=True):
     application = str(manifest.get("application") or "nuke").lower()
-    for job in manifest.get("copy_jobs", []):
+    copy_jobs = manifest.get("copy_jobs")
+    if not isinstance(copy_jobs, list):
+        return False
+    for job in copy_jobs:
+        if not isinstance(job, dict):
+            return False
         destination = job.get("destination")
         if destination:
             path = _resolve_manifest_path(version_path, destination)
@@ -527,8 +540,12 @@ def _manifest_payload_missing(version_path, manifest, deep=True):
 
 
 def _normalise_nuke_reads(reads):
+    if not isinstance(reads, list):
+        return []
     result = []
-    for read in reads or []:
+    for read in reads:
+        if not isinstance(read, dict):
+            continue
         item = dict(read)
         item.setdefault("node_path", read.get("node_name", ""))
         item.setdefault("parameter", "file")
@@ -539,6 +556,12 @@ def _normalise_nuke_reads(reads):
         item.setdefault("status", "Copied")
         result.append(item)
     return result
+
+
+def _manifest_dependency_items(dependencies):
+    if not isinstance(dependencies, list):
+        return []
+    return [item for item in dependencies if isinstance(item, dict)]
 
 
 def _resolve_manifest_path(version_path, path):

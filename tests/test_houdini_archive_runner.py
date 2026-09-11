@@ -1,4 +1,3 @@
-import os
 import sys
 import tempfile
 import unittest
@@ -66,6 +65,124 @@ class HoudiniArchiveRunnerTests(unittest.TestCase):
             with self.assertRaises(runner.RunnerError):
                 runner.resolve_hython(
                     "20.5.684", explicit_path=str(path)
+                )
+
+    def test_executable_version_parses_platform_install_paths(self):
+        self.assertEqual(
+            runner.executable_version(
+                r"C:\Program Files\Side Effects Software"
+                r"\Houdini 20.5.500\bin\hython.exe"
+            ),
+            "20.5.500",
+        )
+        self.assertEqual(
+            runner.executable_version("/opt/hfs20.5.33/bin/hython"),
+            "20.5.33",
+        )
+        self.assertEqual(
+            runner.executable_version(
+                "/Applications/Houdini/Houdini20.5.333.framework"
+                "/Versions/20.5.333/Resources/bin/hython"
+            ),
+            "20.5.333",
+        )
+
+    def test_discovery_accepts_linux_style_install_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hython = Path(tmp) / "hfs20.5.684" / "bin" / "hython"
+            hython.parent.mkdir(parents=True)
+            hython.touch()
+
+            with mock.patch.object(
+                runner,
+                "_discover_hython",
+                return_value=[str(hython)],
+            ):
+                selected = runner.resolve_hython("20.5.684")
+            self.assertEqual(selected["version"], "20.5.684")
+
+            selected = runner.resolve_hython(
+                "20.5.684", explicit_path=str(hython)
+            )
+            self.assertEqual(selected["version"], "20.5.684")
+
+    def test_run_worker_times_out_and_terminates_hung_process(self):
+        class _HungProcess:
+            def __init__(self):
+                self.terminated = False
+                self.killed = False
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout=None):
+                return 0
+
+        process = _HungProcess()
+        with mock.patch.object(
+            runner.subprocess, "Popen", return_value=process
+        ):
+            with self.assertRaisesRegex(
+                runner.RunnerTimeout, "did not finish within"
+            ):
+                runner.run_worker(
+                    "hython.exe",
+                    "inspect",
+                    "scene.hip",
+                    timeout_seconds=0.2,
+                )
+        self.assertTrue(process.terminated)
+        self.assertFalse(process.killed)
+
+    def test_run_worker_reports_launch_failure_as_runner_error(self):
+        with mock.patch.object(
+            runner.subprocess,
+            "Popen",
+            side_effect=OSError("no such file"),
+        ):
+            with self.assertRaisesRegex(
+                runner.RunnerError, "Could not start hython"
+            ):
+                runner.run_worker(
+                    "missing_hython.exe", "inspect", "scene.hip"
+                )
+
+    def test_run_worker_zero_timeout_disables_deadline(self):
+        # A zero timeout must disable the deadline entirely: the slow
+        # process stays alive past it and must not be terminated.
+        class _SlowProcess:
+            calls = 0
+
+            def poll(self):
+                _SlowProcess.calls += 1
+                if _SlowProcess.calls > 3:
+                    return 0
+                return None
+
+            def terminate(self):
+                raise AssertionError("should not terminate")
+
+            def kill(self):
+                raise AssertionError("should not kill")
+
+            def wait(self, timeout=None):
+                return 0
+
+        with mock.patch.object(
+            runner.subprocess, "Popen", return_value=_SlowProcess()
+        ):
+            with self.assertRaises(runner.RunnerError):
+                runner.run_worker(
+                    "hython.exe",
+                    "inspect",
+                    "scene.hip",
+                    timeout_seconds=0,
                 )
 
 

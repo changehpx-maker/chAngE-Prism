@@ -12,6 +12,7 @@ class ArchiveBrowserController:
 
     def add_project_browser_tab(self, origin):
         tab_widget = getattr(origin, "tbw_project", None)
+        insert_index = -1
         if tab_widget is not None:
             for index in range(tab_widget.count()):
                 widget = tab_widget.widget(index)
@@ -25,6 +26,7 @@ class ArchiveBrowserController:
                     self.browser_widget = widget
                     return
                 if widget.property("tabType") in (TAB_TYPE, TAB_LABEL):
+                    insert_index = index
                     tab_widget.removeTab(index)
                     widget.deleteLater()
                     break
@@ -34,7 +36,10 @@ class ArchiveBrowserController:
         )
 
         widget = LazyArchiveBrowserWidget(self.core, parent=origin)
-        origin.addTab(TAB_LABEL, widget)
+        if insert_index >= 0:
+            tab_widget.insertTab(insert_index, widget, TAB_LABEL)
+        else:
+            origin.addTab(TAB_LABEL, widget)
         widget.setProperty("tabType", TAB_TYPE)
         self.browser_widget = widget
 

@@ -16,6 +16,11 @@ _FILE_KEY_MAP = {
     "xml_files": None,
 }
 ANIMATION_LABEL = STEP_LABELS["shot_motion/shot_animation"]
+_SENSITIVE_CONTEXT_KEYS = {
+    "user_phone",
+    "user_name",
+    "user_icon",
+}
 
 
 class FileProcessor(object):
@@ -31,11 +36,26 @@ class FileProcessor(object):
             project_name,
             copy_to_local,
         )
-        shot_data = self.build_product_data(prepared)
-        self.finalize_product(prepared, shot_data)
-        review_copies = self.prepare_review_copies(entity, shot_data)
-        self.execute_review_copies(review_copies)
-        return shot_data
+        try:
+            shot_data = self.build_product_data(prepared)
+            self.finalize_product(prepared, shot_data)
+            review_copies = self.prepare_review_copies(
+                entity, shot_data
+            )
+            self.execute_review_copies(review_copies)
+            return shot_data
+        except Exception as exc:
+            cleanup_errors = []
+            try:
+                self.cleanup_prepared_product(prepared)
+            except Exception as cleanup_exc:
+                cleanup_errors.append(str(cleanup_exc))
+            if cleanup_errors:
+                raise RuntimeError(
+                    "%s | Cleanup failed: %s"
+                    % (exc, "; ".join(cleanup_errors))
+                )
+            raise
 
     def prepare(
         self,
@@ -53,7 +73,11 @@ class FileProcessor(object):
             entity, self.PRODUCT_NAME
         )
         version_dir = os.path.join(str(product_root), str(version))
-        os.makedirs(version_dir, exist_ok=True)
+        if os.path.exists(version_dir):
+            raise FileExistsError(
+                "Product version already exists: %s" % version_dir
+            )
+        os.makedirs(version_dir)
         return {
             "item": item,
             "entity": entity,
@@ -95,6 +119,29 @@ class FileProcessor(object):
             prepared["version"],
         )
         self._apply_shot_attributes(prepared["entity"], shot_data)
+
+    @staticmethod
+    def cleanup_prepared_product(prepared):
+        if not prepared:
+            return
+        product_root = os.path.abspath(
+            os.path.normpath(prepared["product_root"])
+        )
+        version_dir = os.path.abspath(
+            os.path.normpath(prepared["version_dir"])
+        )
+        expected_version = str(prepared["version"])
+        if (
+            os.path.normcase(os.path.dirname(version_dir))
+            != os.path.normcase(product_root)
+            or os.path.basename(version_dir) != expected_version
+        ):
+            raise ValueError(
+                "Refusing to clean unexpected product path: %s"
+                % version_dir
+            )
+        if os.path.isdir(version_dir):
+            shutil.rmtree(version_dir)
 
     def _build_copied_shot_data(
         self,
@@ -166,14 +213,34 @@ class FileProcessor(object):
         if xml_path and xml_attributes is not None:
             entry["xml"] = {
                 "path": xml_path,
-                "attributes": xml_attributes,
+                "attributes": FileProcessor._redact_xml_attributes(
+                    xml_attributes
+                ),
                 "frame_range": frame_range,
             }
         return entry
 
     @staticmethod
+    def _redact_xml_attributes(attributes):
+        result = dict(attributes or {})
+        for key in _SENSITIVE_CONTEXT_KEYS:
+            result.pop(key, None)
+        context = result.get("context")
+        if isinstance(context, dict):
+            context = dict(context)
+            for key in _SENSITIVE_CONTEXT_KEYS:
+                context.pop(key, None)
+            result["context"] = context
+            if not result.get("project_code") and context.get(
+                "project_code"
+            ):
+                result["project_code"] = context["project_code"]
+        return result
+
+    @staticmethod
     def _make_shot_data(item, steps, frame_range, file_root=None):
         return {
+            "project_code": item.get("project_code", ""),
             "episode": item.get("episode", ""),
             "sequence": item.get("sequence", ""),
             "shot": item.get("shot", ""),
@@ -258,22 +325,6 @@ class FileProcessor(object):
             self.core.entities.setShotRange(
                 entity, frame_range[0], frame_range[1]
             )
-        attributes = (
-            shot_data.get("steps", {})
-            .get(ANIMATION_LABEL, {})
-            .get("xml", {})
-            .get("attributes", {})
-        )
-        average = attributes.get("average_translation")
-        if average is not None:
-            metadata = self.core.entities.getMetaData(entity) or {}
-            metadata["average_translation"] = {
-                "show": True,
-                "value": average,
-            }
-            self.core.entities.setMetaData(
-                entity=entity, metaData=metadata
-            )
 
     def import_media_files(self, entity, paths):
         shot_data = {"steps": {"Review": {"review": list(paths)}}}
@@ -336,9 +387,57 @@ class FileProcessor(object):
 
     @staticmethod
     def execute_review_copies(copies):
-        for source, destination in copies:
-            os.makedirs(os.path.dirname(destination), exist_ok=True)
-            shutil.copy2(source, destination)
+        # The version directory is derived from the destinations so the
+        # dialog worker cannot forget it: without this, a failed first
+        # copy leaves an empty media version directory behind.
+        cleanup_directory = FileProcessor._review_version_directory(
+            copies
+        )
+        completed = []
+        try:
+            for source, destination in copies:
+                if os.path.exists(destination):
+                    raise FileExistsError(
+                        "Review destination already exists: %s"
+                        % destination
+                    )
+                os.makedirs(
+                    os.path.dirname(destination), exist_ok=True
+                )
+                shutil.copy2(source, destination)
+                completed.append((source, destination))
+        except Exception:
+            FileProcessor.cleanup_review_copies(
+                completed,
+                empty_directories=(
+                    [cleanup_directory] if cleanup_directory else []
+                ),
+            )
+            raise
+
+    @staticmethod
+    def _review_version_directory(copies):
+        parents = {
+            os.path.dirname(
+                os.path.abspath(os.path.normpath(destination))
+            )
+            for _source, destination in copies or []
+        }
+        return parents.pop() if len(parents) == 1 else ""
+
+    @staticmethod
+    def cleanup_review_copies(copies, empty_directories=None):
+        parents = set(empty_directories or [])
+        for _source, destination in copies or []:
+            destination = os.path.abspath(os.path.normpath(destination))
+            parents.add(os.path.dirname(destination))
+            if os.path.isfile(destination):
+                os.remove(destination)
+        for parent in sorted(parents, key=len, reverse=True):
+            try:
+                os.rmdir(parent)
+            except OSError:
+                pass
 
     def _next_media_version(
         self, entity, identifier, media_type, current_version

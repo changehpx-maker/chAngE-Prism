@@ -1043,6 +1043,10 @@ class AssetLibraryWidget(QWidget):
         item = self.source_tree.currentItem()
         if item is None:
             return
+        # Child rows carry their parent's source id; removing must only
+        # act on a source root row, never on a selected subfolder.
+        if not item.data(0, SOURCE_ROOT_ROLE):
+            return
         source_id = item.data(0, SOURCE_ID_ROLE)
         spec = next(
             (

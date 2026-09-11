@@ -530,6 +530,13 @@ def _classify(node, parm, raw, evaluated, extension):
         or _is_vop_include(node, parm)
     ):
         return "Internal", "Houdini internal resource"
+    if parm is None:
+        # Without a parameter there is nothing to rewrite towards the
+        # packaged copy, so packaging would doom the final save.
+        return (
+            "Skipped Unsupported",
+            "Reference is not tied to a parameter",
+        )
 
     inside_filecache = _is_inside_filecache(node)
     if _is_output(node, parm, inside_filecache):

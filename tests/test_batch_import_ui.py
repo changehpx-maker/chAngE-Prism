@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -37,18 +38,31 @@ class _Reporter:
 
 
 class _Projects:
+    def __init__(self):
+        self.create_calls = 0
+        self.changed_path = ""
+        self.change_succeeds = True
+
     def createProject(self, name, path, **_kwargs):
         del name
-        config = Path(path) / "00_Pipeline" / "project_config.json"
+        self.create_calls += 1
+        config = Path(path) / "00_Pipeline" / "pipeline.json"
         config.parent.mkdir(parents=True)
         config.write_text("{}", encoding="utf-8")
         return str(config)
 
-    def changeProject(self, _path):
-        pass
+    def changeProject(self, path):
+        self.changed_path = str(path)
+        return str(path) if self.change_succeeds else None
 
     def setDepartments(self, _entity_type, _departments):
         pass
+
+
+class _Configs:
+    @staticmethod
+    def getProjectConfigPath(path):
+        return str(Path(path) / "00_Pipeline" / "pipeline.json")
 
 
 class _Entities:
@@ -95,15 +109,20 @@ class _MediaProducts:
 
 class _ImportCore:
     def __init__(self, product_root):
+        self.configs = _Configs()
         self.projects = _Projects()
         self.entities = _Entities()
         self.products = _Products(product_root)
         self.mediaProducts = _MediaProducts()
         self.username = "tester"
         self.user = "tester"
+        self.popups = []
 
     def saveVersionInfo(self, filepath=None, details=None):
         del filepath, details
+
+    def popup(self, message, severity=None, **_kwargs):
+        self.popups.append((message, severity))
 
 
 @unittest.skipUnless(QApplication, "Requires Prism Qt runtime")
@@ -134,6 +153,95 @@ class BatchImportDialogTests(unittest.TestCase):
             finally:
                 dialog.close()
         app.processEvents()
+
+    def test_open_only_lists_first_level_project_directories(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ProjectB").mkdir()
+            (root / "ProjectA").mkdir()
+            (root / ".hidden").mkdir()
+            (root / "readme.txt").write_text("", encoding="utf-8")
+
+            with mock.patch(
+                "change_prism.batch_import.dialog.os.path.isdir",
+                side_effect=AssertionError(
+                    "Opening Batch Import must not inspect project contents"
+                ),
+            ):
+                dialog = BatchImportDialog(
+                    object(), str(root), lambda _data: None
+                )
+            try:
+                self.assertTrue(self._wait_for(
+                    app, lambda: not dialog._project_timer.isActive()
+                ))
+                projects = [
+                    dialog.project_combo.itemText(index)
+                    for index in range(dialog.project_combo.count())
+                ]
+                self.assertEqual(projects, ["ProjectA", "ProjectB"])
+            finally:
+                dialog.close()
+        app.processEvents()
+
+    def test_slow_project_scan_allows_root_change_and_close(self):
+        app = QApplication.instance() or QApplication([])
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        ui_thread = threading.get_ident()
+
+        def scan(root):
+            self.assertNotEqual(threading.get_ident(), ui_thread)
+            if root == "slow":
+                started.set()
+                release.wait(5)
+                finished.set()
+                return ["OldProject"]
+            return ["NewProject"]
+
+        with mock.patch(
+            "change_prism.batch_import.scanner.list_server_projects",
+            side_effect=scan,
+        ):
+            dialog = BatchImportDialog(object(), "slow", lambda _data: None)
+            try:
+                self.assertTrue(started.wait(1))
+                dialog.server_root_edit.setText("fast")
+                dialog._on_server_root_changed()
+                self.assertTrue(self._wait_for(
+                    app, lambda: dialog.project_combo.count() == 1
+                ))
+                self.assertEqual(dialog.project_combo.currentText(), "NewProject")
+                dialog._on_server_root_changed()
+                self.assertFalse(dialog._project_timer.isActive())
+                dialog.show()
+                dialog.close()
+                self.assertFalse(dialog.isVisible())
+                self.assertFalse(finished.is_set())
+            finally:
+                release.set()
+                self.assertTrue(finished.wait(1))
+                app.processEvents()
+                self.assertEqual(dialog.project_combo.currentText(), "NewProject")
+                dialog.close()
+
+    def test_failed_project_scan_finishes_with_visible_error(self):
+        app = QApplication.instance() or QApplication([])
+        with mock.patch(
+            "change_prism.batch_import.scanner.list_server_projects",
+            side_effect=OSError("Server unavailable"),
+        ):
+            dialog = BatchImportDialog(object(), "missing", lambda _data: None)
+            try:
+                self.assertTrue(self._wait_for(
+                    app, lambda: not dialog._project_timer.isActive()
+                ))
+                self.assertEqual(dialog.project_combo.count(), 0)
+                self.assertIn("Server unavailable", dialog.project_combo.toolTip())
+            finally:
+                dialog.close()
 
     def test_async_import_copies_files_without_blocking_prism_phase(self):
         app = QApplication.instance() or QApplication([])
@@ -207,6 +315,127 @@ class BatchImportDialogTests(unittest.TestCase):
                 )
             finally:
                 parent.close()
+        app.processEvents()
+
+    def test_dialog_waits_for_async_callback_and_reuses_pipeline_config(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project_root = root / "show"
+            config = project_root / "00_Pipeline" / "pipeline.json"
+            config.parent.mkdir(parents=True)
+            config.write_text("{}", encoding="utf-8")
+            core = _ImportCore(
+                str(root / "products" / "published_ref")
+            )
+            controller = BatchImportController(core, object())
+            finished = []
+            dialog = BatchImportDialog(
+                core,
+                str(root),
+                controller._start_project_and_shots,
+                finish_callback=lambda _dialog, result: finished.append(
+                    result
+                ),
+            )
+            dialog.project_combo.addItem("show")
+            dialog.project_combo.setCurrentText("show")
+            dialog.local_path_edit.setText(str(root))
+            dialog.create_only_cb.setChecked(True)
+            dialog.scan_results = [
+                {
+                    "project_code": "show",
+                    "episode": "EP01",
+                    "sequence": "SC01",
+                    "shot": "shot001",
+                    "server_dir": str(root / "server" / "shot001"),
+                    "frame_range": [1001, 1100],
+                    "steps": [],
+                }
+            ]
+            dialog._populate_results()
+            try:
+                dialog._on_create_clicked()
+                self.assertTrue(dialog._import_running)
+                self.assertEqual(finished, [])
+                self.assertTrue(
+                    self._wait_for(app, lambda: bool(finished))
+                )
+                self.assertFalse(dialog._import_running)
+                self.assertEqual(finished[0]["success"], 1)
+                self.assertEqual(core.projects.create_calls, 0)
+                self.assertEqual(
+                    core.projects.changed_path, str(config)
+                )
+            finally:
+                dialog.close()
+        app.processEvents()
+
+    def test_project_load_failure_stops_before_import(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "show" / "00_Pipeline" / "pipeline.json"
+            config.parent.mkdir(parents=True)
+            config.write_text("{}", encoding="utf-8")
+            core = _ImportCore(
+                str(root / "products" / "published_ref")
+            )
+            core.projects.change_succeeds = False
+            controller = BatchImportController(core, object())
+            finished = []
+
+            controller._start_project_and_shots(
+                {
+                    "project_name": "show",
+                    "project_path": str(root / "show"),
+                    "selected": [
+                        {
+                            "episode": "EP01",
+                            "sequence": "SC01",
+                            "shot": "shot001",
+                        }
+                    ],
+                    "_reporter": _Reporter(),
+                    "_finished_callback": finished.append,
+                }
+            )
+
+            self.assertEqual(len(finished), 1)
+            self.assertIn(
+                "could not load project config",
+                finished[0]["error"],
+            )
+            self.assertIsNone(controller._import_state)
+        app.processEvents()
+
+    def test_finished_summary_marks_pdg_as_running(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            core = _ImportCore(str(Path(tmp) / "products"))
+            dialog = BatchImportDialog(core, tmp, lambda _data: None)
+            try:
+                dialog.on_create_finished(
+                    1,
+                    0,
+                    summary={
+                        "project": "show",
+                        "total": 1,
+                        "pdg_enabled": True,
+                        "pdg_started": True,
+                    },
+                )
+
+                self.assertIn(
+                    "running in the background",
+                    dialog.status_label.text(),
+                )
+                self.assertIn(
+                    "A completion notification will appear.",
+                    core.popups[-1][0],
+                )
+            finally:
+                dialog.close()
         app.processEvents()
 
 

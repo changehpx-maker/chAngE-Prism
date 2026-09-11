@@ -161,6 +161,22 @@ def create_progress_dialog(plan, parent=None):
     return dialog
 
 
+def create_background_progress_dialog(parent=None):
+    dialog = QProgressDialog(
+        "Packaging Houdini Archive in the background...",
+        "Cancel",
+        0,
+        0,
+        parent,
+    )
+    dialog.setWindowTitle("Package Houdini Archive")
+    dialog.setWindowModality(Qt.WindowModal)
+    dialog.setMinimumDuration(0)
+    dialog.setAutoClose(False)
+    dialog.setAutoReset(False)
+    return dialog
+
+
 class PackageWorker(QObject):
     progress = Signal(object, object, str)
     finished = Signal(object)

@@ -57,6 +57,8 @@ shot001
 ```
 
 点击 `Search Server` 后扫描在后台线程运行，结果表显示 step 和 review 数量。
+单个子目录因权限等原因不可读时会被跳过，不影响其余扫描结果；搜索结束后
+统一弹 warning 列出被跳过的目录。
 
 ## 三种导入模式
 
@@ -66,9 +68,9 @@ shot001
 
 - Prism sequence = 服务器 episode。
 - Prism shot = `<sequence>_<shot>`。
-- 新镜头创建 FX/Effects、Lighting/Lighting、Compositing/Compositing。
+- 新镜头创建 Fx/Effects、Lighting/Lighting、Compositing/Compositing。
 - 创建匹配 Houdini/Nuke 的预设场景。
-- 更新帧范围和 `chAngE_server_*` metadata。
+- Shotinfo 只更新帧范围，不写入镜头 metadata。
 
 不创建 `published_ref`，不导入 review，不运行 PDG。
 
@@ -90,11 +92,15 @@ shot001
 
 勾选 `Run PDG FBX Convert` 后，Batch Import 完成时：
 
-1. 只把成功镜头中的 FBX 写到独立临时 `shot_data.json`。
+1. 只把成功镜头中的 FBX、帧范围、Animation XML 的必要 metadata，以及存在时的 Cloth/Hair XML 路径写到
+   独立的
+   `%TEMP%\chAngE_Prism\batch_import\pdg\json\change_prism_pdg_<随机>\shot_data.json`。
+   Cloth/Hair 只写入 `xml_path`，Houdini PDG 分别生成 `cloth_xml` 和 `hair_xml` 属性。
 2. 从 Prism 当前 Houdini executable override 的同目录推导 `hython.exe`。
 3. 从该 Houdini 安装目录推导 `houdini/python*libs/pdgjob/topcook.py`。
 4. 后台启动一次 `hython -u topcook.py --hip ... --toppath /obj/topnet`。
-5. 完成后弹窗显示退出码及 stdout/stderr 日志。
+5. Batch Import 完成摘要和状态栏提示 PDG 正在后台运行，不显示虚假的百分比进度。
+6. 完成信号回到 Qt 主线程后弹窗提示成功或失败，并显示耗时、退出码及 stdout/stderr 日志。
 
 Hython 和 topcook 不保存为插件配置。运行前在 Prism 中配置：
 
@@ -110,15 +116,20 @@ Settings > User > chAngE_Prism
 插件会合并 Prism 的 `startEnv`、Houdini 用户环境、项目环境和
 `preLaunchApp` 回调，随后显式设置：
 
-- `SHOT_BUILDER_PDG_JSON`
+- `SHOT_BUILDER_PDG_JSON`（指向本次运行的独立临时 JSON）
 - `HOUDINI_PACKAGE_DIR`
 
 不再读取插件根目录 `config.json`，也不要求系统设置 `PIPELINE_ROOT`。
+Hython 启动后，本次 JSON 和随机目录在运行结束后保留，方便复查输入数据。
 
-日志位于 Prism 用户配置文件旁：
+stdout/stderr 日志统一位于：
 
 ```text
-<Prism user prefs folder>/chAngE_Prism/logs/pdg/
+%TEMP%\chAngE_Prism\batch_import\pdg\logs\
 ```
 
-单镜头导入失败不会中断整个批次。失败列表会在结果窗口显示，并写入同一用户目录下的 `logs/reports/`。
+单镜头导入失败不会中断整个批次。失败列表会在结果窗口显示，并写入：
+
+```text
+%TEMP%\chAngE_Prism\batch_import\reports\json\
+```

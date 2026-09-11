@@ -1,5 +1,4 @@
 import json
-import os
 import sys
 import tempfile
 import unittest
@@ -54,6 +53,56 @@ class ArchiveCoreTests(unittest.TestCase):
             ),
             {"department": "cmp", "task": "Compositing"},
         )
+
+    def test_corrupt_manifest_shapes_degrade_instead_of_raising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Archives"
+            source_nk = Path(tmp) / "source.nk"
+            source_nk.write_text("Root {}\n", encoding="utf-8")
+
+            # manifest.json is valid JSON but not an object.
+            list_manifest = root / "v0001"
+            (list_manifest / "nk").mkdir(parents=True)
+            (list_manifest / "nk" / "scene.nk").write_text(
+                "Root {}\n", encoding="utf-8"
+            )
+            (list_manifest / "manifest.json").write_text(
+                "[]", encoding="utf-8"
+            )
+
+            # Structurally valid manifest with junk-typed fields and
+            # junk-typed list entries.
+            junk_manifest = root / "v0002"
+            (junk_manifest / "nk").mkdir(parents=True)
+            (junk_manifest / "nk" / "scene.nk").write_text(
+                "Root {}\n", encoding="utf-8"
+            )
+            (junk_manifest / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "application": "nuke",
+                        "archive_version": "v0002",
+                        "source_nk": str(source_nk),
+                        "packaged_nk": "nk/scene.nk",
+                        "source_nk_stat": "junk",
+                        "reads": ["garbage", {"node_name": "Read1"}],
+                        "copy_jobs": "junk",
+                        "summary": "junk",
+                    }
+                ),
+                encoding="utf-8"
+            )
+
+            versions = archive_core.scan_archive_versions(str(root))
+            by_version = {item["version"]: item for item in versions}
+
+            self.assertEqual(
+                by_version["v0001"]["status"], "Invalid Manifest"
+            )
+            self.assertEqual(
+                len(by_version["v0002"]["manifest"]["reads"]), 2
+            )
+            self.assertEqual(by_version["v0002"]["reference_count"], 1)
 
     def test_scans_legacy_nuke_and_houdini_manifests_together(self):
         with tempfile.TemporaryDirectory() as tmp:

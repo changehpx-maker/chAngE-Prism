@@ -1,6 +1,6 @@
 # chAngE_Prism
 
-`chAngE_Prism v2.5.0` 是基于 Prism 2 的制作流程扩展插件，当前主要服务于镜头批量创建、外部图片资产管理、审片媒体、ACES/OCIO 转换以及 Nuke/Houdini Archive 打包。
+`chAngE_Prism v2.5.1` 是基于 Prism 2 的制作流程扩展插件，当前主要服务于镜头批量创建、外部图片资产管理、审片媒体、ACES/OCIO 转换以及 Nuke/Houdini Archive 打包。
 
 Windows Prism 2.1.2/2.1.3 是当前正式验证环境。Nuke Archive 纯核心额外兼容 Nuke 13.2 的 Python 3.7；Houdini Archive 和 Asset Library 环境光支持 Houdini 20.5+。
 
@@ -79,7 +79,7 @@ Asset Library 的源列表直接在 `Asset Library` 页签内管理，同样写�
 
 | Settings 字段 | 说明 |
 |---|---|
-| `Server Publish Root` | Batch Import 的服务器根目录；未设置时 Windows 回退到 `P:\` |
+| `Server Publish Root` | Batch Import 的服务器根目录；无内置默认值，必须由 Settings 设置 |
 | `Local Projects Root` | Batch Import 创建或打开本地 Prism 项目的根目录 |
 | `Daily Review Destination` | Daily Review Copy 根目录，实际目标为 `<root>/YYYY-MM-DD/` |
 | `Hython (from Prism)` | 只读；由 `Settings > User > Apps > Houdini` 的 executable override 自动推导 |
@@ -109,12 +109,13 @@ Prism 用户设置。旧版根目录 `config.json` 不再参与运行，可在�
 
 ## Batch Import
 
+- 项目下拉列表在后台扫描服务器根目录；切换路径时忽略旧结果，关闭窗口无需等待目录扫描。扫描失败原因显示在项目下拉框的提示中。
 - 扫描 `shot_animation`、`cloth_solution`、`hair_solution`，递归识别大小写不敏感的 FBX、ABC、MOV 和 XML。
 - Filter 支持完整 `episode/sequence/shot` 行，也支持连续三行 `episode/`、`sequence/`、`shot`。
-- `Create shot only` 仅创建或更新 Prism 镜头、部门、任务、预设场景、帧范围和服务器 metadata。
+- `Create shot only` 仅创建或更新 Prism 镜头、Fx/Effects 等部门与任务、预设场景和帧范围；Shotinfo 不写入镜头 metadata。
 - 默认模式保留服务器源文件路径，在 `published_ref/v####` 写入标准化 `versioninfo.json`；`Copy to local` 会先复制三个发布 step，再让记录和 PDG 指向本地版本。
 - Review MOV 进入 Prism `playblasts` 类型的 `review` media 版本；不同 step 的同名 MOV 会保留并自动加 step 前缀。
-- `Run PDG FBX Convert` 只把 FBX 写入临时 JSON，并在导入完成后后台启动一次 `hython + topcook.py`。结束弹窗会给出退出码和 stdout/stderr 日志路径。
+- `Run PDG FBX Convert` 只把成功镜头中的 FBX、帧范围、Animation XML 的必要 metadata，以及存在时的 Cloth/Hair XML 路径写入独立的 `%TEMP%\chAngE_Prism\batch_import\pdg\json\change_prism_pdg_<随机>\shot_data.json`，并在导入完成后后台启动一次 `hython + topcook.py`。JSON 路径通过 `SHOT_BUILDER_PDG_JSON` 传入，Hython 结束后保留以便排查；导入摘要会提示 PDG 正在后台运行，结束后由 Qt 主线程弹窗给出耗时、JSON、stdout 和 stderr 路径。
 - Hython 始终来自 Prism 当前 Houdini executable override；`topcook.py` 从同一 Houdini 安装目录推导，不再保存 `hython_path` 或 `topcook_path`。
 - PDG 明确设置 `SHOT_BUILDER_PDG_JSON` 和 Settings 中的 `HOUDINI_PACKAGE_DIR`，不再要求系统预先配置 `PIPELINE_ROOT`。
 
@@ -176,6 +177,7 @@ Prism 用户设置。旧版根目录 `config.json` 不再参与运行，可在�
 - 目标固定为 `<review_copy.destination_root>/YYYY-MM-DD/`。
 - 同名文件覆盖；同名目录合并并覆盖冲突文件，不删除目标中额外文件。
 - 批量复制会收集失败项并在结束时统一显示。
+- 复制在后台执行，不弹出进度窗口；结束后显示非阻塞结果提示。
 
 ## 测试
 
@@ -193,15 +195,15 @@ Houdini HOM 冒烟测试：
 
 ```powershell
 & "C:\Program Files\Side Effects Software\Houdini 20.5.684\bin\hython.exe" tests\houdini_archive_smoke.py
-& "C:\Program Files\Side Effects Software\Houdini 21.0.631\bin\hython.exe" tests\houdini_archive_smoke.py
+& "C:\Program Files\Side Effects Software\Houdini 21.0.792\bin\hython.exe" tests\houdini_archive_smoke.py
 & "C:\Program Files\Side Effects Software\Houdini 22.0.368\bin\hython.exe" tests\houdini_archive_smoke.py
 
 & "C:\Program Files\Side Effects Software\Houdini 20.5.684\bin\hython.exe" tests\houdini_asset_library_smoke.py
-& "C:\Program Files\Side Effects Software\Houdini 21.0.631\bin\hython.exe" tests\houdini_asset_library_smoke.py
+& "C:\Program Files\Side Effects Software\Houdini 21.0.792\bin\hython.exe" tests\houdini_asset_library_smoke.py
 & "C:\Program Files\Side Effects Software\Houdini 22.0.368\bin\hython.exe" tests\houdini_asset_library_smoke.py
 ```
 
-headless/HOM 测试需要对应 DCC 许可证。最近一次 Prism 2.1.2/2.1.3 / PySide6 环境验证均运行 148 项测试：通过 141 项，跳过 7 项需要额外权限或外部工具的环境型测试；Houdini 20.5.684、21.0.631、22.0.368 的 Asset Library HOM 冒烟测试均已通过。
+headless/HOM 测试需要对应 DCC 许可证。2026-09-05 在 Prism 2.1.3 / Python 3.13 / PySide6 环境验证：200 项测试中通过 199 项，跳过 1 项目录符号链接测试（环境无法创建链接），包含 bundled OCIO/FFmpeg 转换验证。Houdini 20.5.684、21.0.792 的 Archive 和 Asset Library HOM 冒烟测试均通过；Nuke 13.2v1 和 Houdini 22.0.368 因许可证不可用未完成验证。此记录不代表其他 Prism/DCC 版本或生产场景已经验收。
 
 ## 进一步文档
 
